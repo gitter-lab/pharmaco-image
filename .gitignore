@@ -2,10 +2,6 @@
 .Rhistory
 .ipynb_checkpoints/
 __pycache__
-train_output
-train_resource
-temp_resource
-t_cell/data
-output
 *.swp
 *.pb
+data
