@@ -84,6 +84,110 @@ def get_all_location(c, pid, sid, wid, output=None):
     return dic
 
 
+def get_intersect_point(v1, v2, width, height):
+    """
+    To deal with the out-of-frame polygons, we need to compute
+    the intersection points of missing vertex and contained
+    vertex to generate a new polygon to crop.
+
+    This is a helper function to compute the intersect point
+    of the line between two vertecies and all four edge lines.
+
+    Args:
+        v1, v2: each of the coordinate in list form [x1, y1], etc.
+        width, height: ints, the width and height of the image
+    Rturn:
+        [x, y] if found a intersection point, otherwise None
+    """
+
+    # Compute the v1v2 line
+    x1, y1, x2, y2 = *v1, *v2
+    k = (y2 - y1) / (x2 - x1)
+    b = y1 - k * x1
+    x_max, x_min = max(x1, x2), min(x1, x2)
+    y_max, y_min = max(y1, y2), min(y1, y2)
+
+    # Test the left vertical edge
+    if b >= 0 and b <= y_max and b >= y_min:
+        return [0, round(b)]
+
+    # Test the right vertical edge
+    y_right = width * k + b
+    if y_right >= 0 and y_right <= y_max and y_right >= y_min:
+        return [width, round(y_right)]
+
+    # Test the top horizontal edge
+    x_top = (-1) * b / k
+    if x_top >= 0 and x_top <= x_max and x_top >= x_min:
+        return [round(x_top), 0]
+
+    # Test the bottom horizontal edge
+    x_bot = (height - b) / k
+    if x_bot >= 0 and x_bot <= x_max and x_bot >= x_min:
+        return [round(x_bot), height]
+
+    return None
+
+
+def get_new_polygon(original_polygon, width, height):
+    """
+    Find the intersection polygon of the original polygon and the
+    image.
+    Args:
+        original_polygon: [4,1,2] shape numpy array. The vertex order
+                          The order of vertices must be top-left, top-right,
+                          bot-right, bot-left.
+        width, height: int, the width of height of the image
+    Return:
+        The original_polygon if the area is fully contained in the
+        image. Otherwise a smaller sub-polygon intersected with the
+        image.
+    """
+    new_vertices = []
+
+    for i in range(4):
+        vertex = original_polygon[i][0]
+
+        # Test if the vertex is out of range
+        if vertex[0] < 0 or vertex[0] > width or vertex[1] < 0 or \
+           vertex[1] > height:
+            previous_vertex = original_polygon[i - 1][0]
+            next_vertex = original_polygon[(i + 1) % 4][0]
+
+            pre_intersect = get_intersect_point(vertex, previous_vertex,
+                                                width, height)
+            next_intersect = get_intersect_point(vertex, next_vertex,
+                                                 width, height)
+
+            if not pre_intersect and not next_intersect:
+                # This missing vertex has two missing neighbors
+                # We replae it with the closed vertex of the image
+                if vertex[0] < 0:
+                    if vertex[1] < 0:
+                        new_vertices.append([0, 0])
+                    else:
+                        new_vertices.append([0, height])
+                else:
+                    if vertex[1] < 0:
+                        new_vertices.append([width, 0])
+                    else:
+                        new_vertices.append([width, height])
+
+            else:
+                # Replace this missing vertex by the intersection
+                # point(s) in order
+                if pre_intersect:
+                    new_vertices.append(pre_intersect)
+
+                if next_intersect:
+                    new_vertices.append(next_intersect)
+        else:
+            # This vertex is contained
+            new_vertices.append(vertex)
+
+    return np.array(new_vertices).reshape(-1, 1, 2).astype(int)
+
+
 def crop_image_from_well(img_name, location, save_dir):
     """
     Crop single cell images from the img_name image.
@@ -95,7 +199,8 @@ def crop_image_from_well(img_name, location, save_dir):
 
     # We want to preserve the orientation of cells in the combined image, so
     # we need to use a polygon mask there.
-    for k in [31]:
+    for k in range(1, 31):
+        print(k)
         image = cv2.imread(img_name, -1)
 
         # 1. Make polygon
@@ -118,6 +223,9 @@ def crop_image_from_well(img_name, location, save_dir):
         # Format the polygon
         points = rotated_points.astype(int).reshape((-1, 1, 2))
 
+        # 🙁 We also need to deal some polygons that are out of range
+        points = get_new_polygon(points, image.shape[1], image.shape[0])
+
         # 2. Crop the bounding box of the polygon
         rect = cv2.boundingRect(points)
         x, y, w, h = rect
@@ -134,13 +242,11 @@ def crop_image_from_well(img_name, location, save_dir):
 
         # Translate the points into the bounding box axis
         translated_points = points - points.min(axis=0)
-        cv2.fillConvexPoly(mask, translated_points, white_color)
+        cv2.fillConvexPoly(mask, translated_points, white_color,
+                           lineType=cv2.LINE_AA)
 
         # 4. Apply the mask
         masked_image = cv2.bitwise_and(cropped, cropped, mask=mask)
-        #cv2.imshow('tif', cropped * 16)
-        #cv2.waitKey(0)
-        #cv2.destroyAllWindows()
 
         # Save the masked_image to the output directory
         new_name = 'c{:03}_{}'.format(int(k), basename(img_name))
