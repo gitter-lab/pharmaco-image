@@ -4,9 +4,14 @@ A collection of utility functions for image processing.
 
 import sqlite3
 import cv2
+import random
+import string
+import os
+import re
 import numpy as np
+from shutil import copyfile, rmtree
 from json import dump
-from os.path import basename, join
+from os.path import basename, join, exists
 
 
 def get_second_key(c, pid, sid, wid):
@@ -55,7 +60,6 @@ def get_all_location(c, pid, sid, wid, output=None):
     )
 
     cell_count = int(c.fetchall()[0][0])
-    print(cell_count)
 
     # Get the secondary key
     tid, iid = get_second_key(c, pid, sid, wid)
@@ -199,8 +203,7 @@ def crop_image_from_well(img_name, location, save_dir):
 
     # We want to preserve the orientation of cells in the combined image, so
     # we need to use a polygon mask there.
-    for k in range(1, 31):
-        print(k)
+    for k in location:
         image = cv2.imread(img_name, -1)
 
         # 1. Make polygon
@@ -255,9 +258,65 @@ def crop_image_from_well(img_name, location, save_dir):
         cv2.imwrite(new_name, masked_image * 16)
 
 
+def make_gray_training_dir(pid, wid, input_dir, output_dir, sql_path):
+    """
+    Generate a training directory having a subdirectory for each pid+wid. All
+    channels and DOF cropped single cell images are stored in those
+    subdirectories.
+
+    Args:
+        input_dir: the directory storing the 5 channel directories. Each
+                   directory is expected to have name like `24278-ERSyto`.
+        output_dir: the directory to save cropped images.
+    """
+
+    # Create output dir
+    out_sub_dir = join(output_dir, '{}_{}'.format(pid, wid))
+    if not exists(out_sub_dir):
+        os.mkdir(out_sub_dir)
+
+    # Copy the images into a temporary cache dir and give them a better name
+    cache_dir = ''.join(random.choice(string.ascii_uppercase)
+                        for _ in range(10))
+    os.mkdir(cache_dir)
+    dies = {'ERSyto': 1,
+            'ERSytoBleed': 2,
+            'Hoechst': 3,
+            'Mito': 4,
+            'Ph_golgi': 5}
+    
+    cache_images = []
+    for d in dies:
+        channel_dir = join(input_dir, '{}-{}'.format(pid, d))
+        # Get all the DOF images
+        images = [f for f in os.listdir(channel_dir) if
+                  re.search(r'^.*_{}_s\d_.*\.tif$'.format(wid), f)]
+        for i in images:
+            dest_path = join(cache_dir,
+                             re.sub(r'^.+_(a\d+_s\d).*$',
+                                    r'ch{}_\1.tif'.format(dies[d]), i))
+            cache_images.append(dest_path)
+            src_path = join(channel_dir, i)
+            copyfile(src_path, dest_path)
+
+    # Crop images
+    conn = sqlite3.connect(sql_path)
+    c = conn.cursor()
+    for i in cache_images:
+        # Get the sid
+        sid = int(re.sub(r'^.*ch\d_{}_s(\d).tif$'.format(wid), r'\1', i))
+        location = get_all_location(c, pid, sid, wid)
+        crop_image_from_well(i, location, out_sub_dir)
+
+    # Clean the cache
+    rmtree(cache_dir)
+
+
 if __name__ == '__main__':
     sql_path = './data/test/meta_data/extracted_features/24278.sqlite'
     conn = sqlite3.connect(sql_path)
     c = conn.cursor()
     dic = get_all_location(c, 24278, 1, 'a01', 'test.json')
-    crop_image_from_well('./test.tif', dic, './test')
+    #crop_image_from_well('./test.tif', dic, './test')
+    make_gray_training_dir(24278, 'a01', '/Users/JayWong/Downloads', './test',
+                           './data/test/meta_data/extracted_features/24278.sqlite')
