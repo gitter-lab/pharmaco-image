@@ -8,10 +8,11 @@ import random
 import string
 import os
 import re
+from PIL import Image
 import numpy as np
 from shutil import copyfile, rmtree
 from json import dump
-from os.path import basename, join, exists
+from os.path import basename, join, exists, splitext
 from glob import glob
 
 
@@ -342,7 +343,8 @@ def crop_image_from_well_rotate(img_name, location, save_dir, times16=True):
         cv2.imwrite(new_name, cropped)
 
 
-def make_gray_training_dir(pid, wid, input_dir, output_dir, sql_path):
+def make_gray_training_dir(pid, wid, input_dir, output_dir, sql_path,
+                           keep_cache=False):
     """
     Generate a training directory having a subdirectory for each pid+wid. All
     channels and DOF cropped single cell images are stored in those
@@ -352,6 +354,8 @@ def make_gray_training_dir(pid, wid, input_dir, output_dir, sql_path):
         input_dir: the directory storing the 5 channel directories. Each
                    directory is expected to have name like `24278-ERSyto`.
         output_dir: the directory to save cropped images.
+        sql_pth: the path to the sql database
+        keep_cache: if true, the cache directory will not be deleted
     """
 
     # Create output dir
@@ -393,7 +397,8 @@ def make_gray_training_dir(pid, wid, input_dir, output_dir, sql_path):
         crop_image_from_well(i, location, out_sub_dir)
 
     # Clean the cache
-    rmtree(cache_dir)
+    if not keep_cache:
+        rmtree(cache_dir)
 
 
 def make_rgb_training_dir(pid, wid, input_dir, output_dir, sql_path):
@@ -476,9 +481,97 @@ def make_rgb_training_dir(pid, wid, input_dir, output_dir, sql_path):
     rmtree(cache_dir)
 
 
+def rotate(image_name, output_dir):
+    """
+    Rotate the image 90 degree three times, save all four images to output_dir.
+    """
+
+    image = Image.open(image_name)
+    image.save(join(output_dir, image_name))
+    name = splitext(image_name)
+
+    for degree in [90, 180, 270]:
+        new_name = name + "_{}.tif".format(degree)
+        image.rotate(degree).save(join(output_dir, new_name))
+
+
+def rotate_directory(input_dir, output_dir):
+    """
+    Rotate all the images in input_dir, and then save the processed
+    images into output_dir.
+    """
+    if not exists(output_dir):
+        os.makedirs(output_dir)
+
+    for image in glob(join(input_dir, "*.tif")):
+        rotate(image, output_dir)
+
+
+def transfer_files(basenames, input_dir, output_dir):
+    """
+    Transfer all files on basenames list from input_dir to output_dir
+    """
+    with open(basenames, 'r') as fp:
+        lines = fp.readlines()
+        for l in lines:
+            name = l.replace('\n', '')
+            copyfile(join(input_dir, name), join(output_dir, basename(name)))
+
+
+def get_max_size(*input_dirs):
+    """
+    Find the maximum height/width of all images in the input_dirs.
+    """
+    max_size = -1
+    max_name = ''
+    for direc in input_dirs:
+        for image in glob(join(direc, "*.tif")):
+            img = cv2.imread(image, -1)
+            height, width = img.shape[:2]
+            if max_size < max([width, height]):
+                max_size = max([width, height])
+                max_name = image
+    return max_size, max_name
+
+
+def add_padding_with_size(output_dir, *input_dirs, show_max_name=False):
+    """
+    This function finds the max size of all images in the input_dirs, then
+    add paddings to all images to make all of them having the max size while
+    preserving the original size. It finally copies the same dir structure to
+    the output_dir.
+    """
+    # Find the max size
+    pad_size, max_name = get_max_size(*input_dirs)
+    if show_max_name:
+        print(max_name)
+
+    for direc in input_dirs:
+        dir_name = join(output_dir, *direc.split('/')[-2:])
+        # Create output dir
+        if not exists(dir_name):
+            os.makedirs(dir_name)
+        # Add paddings
+        for image in glob(join(direc, "*.tif")):
+            img = cv2.imread(image, -1)
+            height, width = img.shape[:2]
+
+            # Calculate the with of paddings in order to put the image in
+            # the center
+            x_shift = (pad_size - width) // 2
+            y_shift = (pad_size - height) // 2
+            BLACK = (0, 0, 0)
+
+            new_image = cv2.copyMakeBorder(img, y_shift, y_shift, x_shift,
+                                           x_shift, cv2.BORDER_CONSTANT,
+                                           value=BLACK)
+            base = basename(image).replace('tif', 'png')
+            cv2.imwrite(join(dir_name, base), new_image)
+
+
 if __name__ == '__main__':
     sql_path = './data/test/meta_data/extracted_features/24278.sqlite'
-
+    '''
     make_rgb_training_dir(24278, 'a15', '/Users/JayWong/Downloads', './train',
                           sql_path)
     make_rgb_training_dir(24278, 'j12', '/Users/JayWong/Downloads', './train',
@@ -487,3 +580,10 @@ if __name__ == '__main__':
                           sql_path)
     make_rgb_training_dir(24278, 'a13', '/Users/JayWong/Downloads', './train',
                           sql_path)
+    '''
+    add_padding_with_size('out', 'train/24278_a13/c123',
+                          'train/24278_a13/c45', 'train/24278_a15/c123',
+                          'train/24278_a15/c45', 'train/24278_j12/c123',
+                          'train/24278_j12/c45', 'train/24278_p22/c123',
+                          'train/24278_p22/c45', show_max_name=True)
+
