@@ -12,6 +12,7 @@ import numpy as np
 from shutil import copyfile, rmtree
 from json import dump
 from os.path import basename, join, exists
+from glob import glob
 
 
 def get_second_key(c, pid, sid, wid):
@@ -258,7 +259,7 @@ def crop_image_from_well(img_name, location, save_dir):
         cv2.imwrite(new_name, masked_image * 16)
 
 
-def crop_image_from_well_rotate(img_name, location, save_dir):
+def crop_image_from_well_rotate(img_name, location, save_dir, times16=True):
     """
     Crop single cell images from the img_name image. This function will rotate
     the whole image directly so the relative angle of each cell is not
@@ -268,8 +269,9 @@ def crop_image_from_well_rotate(img_name, location, save_dir):
         img_name: string, the path to the image
         location: a location dictionary encoding the cell index and position
         save_path: string, the directory name where images are saved
+        times16: if to multiply the result image by 16
     """
-    for k in [6]:
+    for k in location:
         image = cv2.imread(img_name, -1)
 
         height, width = image.shape[:2]
@@ -330,14 +332,14 @@ def crop_image_from_well_rotate(img_name, location, save_dir):
             y = 0
 
         cropped = rotated_image[y: y + h, x: x + w].copy()
-
-        print(x, y, w, h)
+        cropped = cropped * 16 if times16 else cropped
 
         # Save the masked_image to the output directory
-        new_name = 'c{:03}_{}'.format(int(k), basename(img_name))
+        new_name = re.sub(r'^(.*)\.tif$', r'\1' + '_c{:03}.tif'.format(int(k)),
+                          basename(img_name))
         new_name = join(save_dir, new_name)
 
-        cv2.imwrite(new_name, cropped * 16)
+        cv2.imwrite(new_name, cropped)
 
 
 def make_gray_training_dir(pid, wid, input_dir, output_dir, sql_path):
@@ -394,11 +396,94 @@ def make_gray_training_dir(pid, wid, input_dir, output_dir, sql_path):
     rmtree(cache_dir)
 
 
-if __name__ == '__main__':
-    sql_path = './data/test/meta_data/extracted_features/24278.sqlite'
+def make_rgb_training_dir(pid, wid, input_dir, output_dir, sql_path):
+    """
+    Generate a training directory having a subdirectory for each pid+wid. All
+    channels and DOF cropped single cell images are stored in those
+    subdirectories. Cells are merged into RGB scale by 123 channels, and 45
+    channels.
+
+    Args:
+        input_dir: the directory storing the 5 channel directories. Each
+                   directory is expected to have name like `24278-ERSyto`.
+        output_dir: the directory to save cropped images.
+    """
+
+    # Create output dir
+    if not exists(output_dir):
+        os.mkdir(output_dir)
+    out_sub_dir = join(output_dir, '{}_{}'.format(pid, wid))
+    if not exists(out_sub_dir):
+        os.mkdir(out_sub_dir)
+        os.mkdir(join(out_sub_dir, 'c123'))
+        os.mkdir(join(out_sub_dir, 'c45'))
+
+    # Copy the images into a temporary cache dir and give them a better name
+    cache_dir = ''.join(random.choice(string.ascii_uppercase)
+                        for _ in range(10))
+    os.mkdir(cache_dir)
+    os.mkdir(join(cache_dir, 'c123'))
+    os.mkdir(join(cache_dir, 'c45'))
+
+    dies = {'ERSyto': 1,
+            'ERSytoBleed': 2,
+            'Hoechst': 3,
+            'Mito': 4,
+            'Ph_golgi': 5}
+
+    for sid in range(1, 10):
+        channels = []
+        for d in dies:
+            channel_dir = join(input_dir, '{}-{}'.format(pid, d))
+            images = [f for f in os.listdir(channel_dir) if
+                      re.search(r'^.*_{}_s{}_.*\.tif$'.format(wid, sid), f)]
+            if len(images) == 0:
+                # The pid has less than 9 DOF
+                break
+            channels.append(cv2.imread(join(channel_dir, images[0]), -1) * 16)
+
+        # Merge the channels and save to the cache
+        if len(channels) == 0:
+            break
+        black_image = np.zeros(channels[0].shape).astype(channels[0].dtype)
+        c123_name = join(cache_dir, 'c123/{}_{}_{}.tif'.format(pid, wid, sid))
+        c45_name = join(cache_dir, 'c45/{}_{}_{}.tif'.format(pid, wid, sid))
+        cv2.imwrite(c45_name, cv2.merge([channels[4],
+                                         black_image,
+                                         channels[3]]))
+        cv2.imwrite(c123_name, cv2.merge([channels[2],
+                                          channels[1],
+                                          channels[0]]))
+
+    # Crop images
     conn = sqlite3.connect(sql_path)
     c = conn.cursor()
-    dic = get_all_location(c, 24278, 1, 'a01', 'test.json')
-    crop_image_from_well_rotate('./test.tif', dic, './test')
-    #make_gray_training_dir(24278, 'a01', '/Users/JayWong/Downloads', './test',
-    #                       './data/test/meta_data/extracted_features/24278.sqlite')
+
+    # Crop c123
+    for i in glob(join(cache_dir, 'c123/*.tif')):
+        sid = int(re.sub(r'^.*_.*_(\d).tif$'.format(wid), r'\1', i))
+        location = get_all_location(c, pid, sid, wid)
+        crop_image_from_well_rotate(i, location, join(out_sub_dir, 'c123'),
+                                    times16=False)
+
+    # Crop c45
+    for i in glob(join(cache_dir, 'c45/*.tif')):
+        sid = int(re.sub(r'^.*_.*_(\d).tif$'.format(wid), r'\1', i))
+        location = get_all_location(c, pid, sid, wid)
+        crop_image_from_well_rotate(i, location, join(out_sub_dir, 'c45'),
+                                    times16=False)
+
+    rmtree(cache_dir)
+
+
+if __name__ == '__main__':
+    sql_path = './data/test/meta_data/extracted_features/24278.sqlite'
+
+    make_rgb_training_dir(24278, 'a15', '/Users/JayWong/Downloads', './train',
+                          sql_path)
+    make_rgb_training_dir(24278, 'j12', '/Users/JayWong/Downloads', './train',
+                          sql_path)
+    make_rgb_training_dir(24278, 'p22', '/Users/JayWong/Downloads', './train',
+                          sql_path)
+    make_rgb_training_dir(24278, 'a13', '/Users/JayWong/Downloads', './train',
+                          sql_path)
