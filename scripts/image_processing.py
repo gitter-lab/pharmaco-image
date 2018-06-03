@@ -258,6 +258,88 @@ def crop_image_from_well(img_name, location, save_dir):
         cv2.imwrite(new_name, masked_image * 16)
 
 
+def crop_image_from_well_rotate(img_name, location, save_dir):
+    """
+    Crop single cell images from the img_name image. This function will rotate
+    the whole image directly so the relative angle of each cell is not
+    perversed.
+
+    args:
+        img_name: string, the path to the image
+        location: a location dictionary encoding the cell index and position
+        save_path: string, the directory name where images are saved
+    """
+    for k in [6]:
+        image = cv2.imread(img_name, -1)
+
+        height, width = image.shape[:2]
+        image_center = (width / 2, height / 2)
+
+        # Get the bounding box information
+        pos = location[k]
+        x, y = int(pos[0]), int(pos[1])
+        half_major, half_minor = round(pos[2] / 2), round(pos[3] / 2)
+        degree = pos[4]
+
+        # Rotate the whole image
+        rotate_matrix = cv2.getRotationMatrix2D(image_center, degree, 1)
+
+        # Use cos and sin to compute the smallest rec to contain the rotated
+        # image so we are not losing pixels
+        abs_cos = abs(rotate_matrix[0, 0])
+        abs_sin = abs(rotate_matrix[0, 1])
+
+        bound_w = int(height * abs_sin + width * abs_cos)
+        bound_h = int(height * abs_cos + width * abs_sin)
+
+        # Add translation to the rotation matrix
+        rotate_matrix[0, 2] += bound_w / 2 - image_center[0]
+        rotate_matrix[1, 2] += bound_h / 2 - image_center[1]
+
+        # Transform the whole image
+        rotated_image = cv2.warpAffine(image, rotate_matrix,
+                                       (bound_w, bound_h))
+
+        # Transform the center
+        rotated_x, rotated_y = cv2.transform(np.array([[[x, y]]]),
+                                             rotate_matrix)[0][0].astype(int)
+
+        # Get the bounding rectangle
+        points = np.array([[
+            [rotated_x - half_major, rotated_y - half_minor],
+            [rotated_x + half_major, rotated_y - half_minor],
+            [rotated_x + half_major, rotated_y + half_minor],
+            [rotated_x - half_major, rotated_y + half_minor]
+        ]])
+
+        points = points.astype(int).reshape((-1, 1, 2))
+
+        # Crop the rectangle
+        x, y, w, h = (rotated_x - half_major, rotated_y - half_minor,
+                      half_major * 2, half_minor * 2)
+
+        # Fix out-of-frame problem
+        if x >= bound_w or y >= bound_h:
+            print("Left point of the cropping rec out of range.")
+            exit(1)
+        if x < 0:
+            w += x
+            x = 0
+        if y < 0:
+            h += y
+            y = 0
+
+        cropped = rotated_image[y: y + h, x: x + w].copy()
+
+        print(x, y, w, h)
+
+        # Save the masked_image to the output directory
+        new_name = 'c{:03}_{}'.format(int(k), basename(img_name))
+        new_name = join(save_dir, new_name)
+
+        cv2.imwrite(new_name, cropped * 16)
+
+
 def make_gray_training_dir(pid, wid, input_dir, output_dir, sql_path):
     """
     Generate a training directory having a subdirectory for each pid+wid. All
@@ -284,7 +366,7 @@ def make_gray_training_dir(pid, wid, input_dir, output_dir, sql_path):
             'Hoechst': 3,
             'Mito': 4,
             'Ph_golgi': 5}
-    
+
     cache_images = []
     for d in dies:
         channel_dir = join(input_dir, '{}-{}'.format(pid, d))
@@ -317,6 +399,6 @@ if __name__ == '__main__':
     conn = sqlite3.connect(sql_path)
     c = conn.cursor()
     dic = get_all_location(c, 24278, 1, 'a01', 'test.json')
-    #crop_image_from_well('./test.tif', dic, './test')
-    make_gray_training_dir(24278, 'a01', '/Users/JayWong/Downloads', './test',
-                           './data/test/meta_data/extracted_features/24278.sqlite')
+    crop_image_from_well_rotate('./test.tif', dic, './test')
+    #make_gray_training_dir(24278, 'a01', '/Users/JayWong/Downloads', './test',
+    #                       './data/test/meta_data/extracted_features/24278.sqlite')
