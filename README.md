@@ -1,7 +1,12 @@
 # pharmaco-image
 
-## Read the Tiff Image
+## Data Exploration
 
-The best way is to use `skim age.external.tifffile` to handle the Tiff image IO. This module is basically a wrapper of the [`tifffile.py`](https://pypi.org/project/tifffile/), but it comes with `scikit-image` and better documentation.
+View the following Jupyter notebooks for some insights of [Human U2OS cells dataset](http://www.cellimagelibrary.org/pages/project_20269).
 
-To display the read image data, simply use `matplotlib`'s `imshow` function.
+|Notebook|Description|
+|:---:|:---:|
+|[`image_processing.ipynb`](./image_processing.ipynb)|Visualize the raw images and their features|
+|[`meta_data.ipynb`](./meta_data.ipynb)|Explore the meta data come with the image dataset|
+|[`feature_visualization.ipynb`](./feature_visualization.ipynb)|Visualize the single cell images and their extracted features|
+
