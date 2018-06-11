@@ -1,5 +1,4 @@
 from rdkit import Chem
-from rdkit.Chem import AllChem
 import pandas as pd
 import numpy as np
 

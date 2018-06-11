@@ -401,7 +401,9 @@ def make_gray_training_dir(pid, wid, input_dir, output_dir, sql_path,
         rmtree(cache_dir)
 
 
-def make_rgb_training_dir(pid, wid, input_dir, output_dir, sql_path):
+def make_rgb_training_dir(pid, wid, input_dir, output_dir, sql_path,
+                          keep_cache=False, crop_cell=True,
+                          output_format='tif'):
     """
     Generate a training directory having a subdirectory for each pid+wid. All
     channels and DOF cropped single cell images are stored in those
@@ -425,10 +427,12 @@ def make_rgb_training_dir(pid, wid, input_dir, output_dir, sql_path):
 
     # Copy the images into a temporary cache dir and give them a better name
     cache_dir = ''.join(random.choice(string.ascii_uppercase)
-                        for _ in range(10))
-    os.mkdir(cache_dir)
-    os.mkdir(join(cache_dir, 'c123'))
-    os.mkdir(join(cache_dir, 'c45'))
+                        for _ in range(10)) if crop_cell else out_sub_dir
+
+    if crop_cell:
+        os.mkdir(cache_dir)
+        os.mkdir(join(cache_dir, 'c123'))
+        os.mkdir(join(cache_dir, 'c45'))
 
     dies = {'ERSyto': 1,
             'ERSytoBleed': 2,
@@ -451,8 +455,10 @@ def make_rgb_training_dir(pid, wid, input_dir, output_dir, sql_path):
         if len(channels) == 0:
             break
         black_image = np.zeros(channels[0].shape).astype(channels[0].dtype)
-        c123_name = join(cache_dir, 'c123/{}_{}_{}.tif'.format(pid, wid, sid))
-        c45_name = join(cache_dir, 'c45/{}_{}_{}.tif'.format(pid, wid, sid))
+        c123_name = join(cache_dir, 'c123/{}_{}_{}.{}'.format(pid, wid, sid,
+                                                              output_format))
+        c45_name = join(cache_dir, 'c45/{}_{}_{}.{}'.format(pid, wid, sid,
+                                                            output_format))
         cv2.imwrite(c45_name, cv2.merge([channels[4],
                                          black_image,
                                          channels[3]]))
@@ -460,25 +466,27 @@ def make_rgb_training_dir(pid, wid, input_dir, output_dir, sql_path):
                                           channels[1],
                                           channels[0]]))
 
-    # Crop images
-    conn = sqlite3.connect(sql_path)
-    c = conn.cursor()
+    if crop_cell:
+        # Crop images
+        conn = sqlite3.connect(sql_path)
+        c = conn.cursor()
 
-    # Crop c123
-    for i in glob(join(cache_dir, 'c123/*.tif')):
-        sid = int(re.sub(r'^.*_.*_(\d).tif$'.format(wid), r'\1', i))
-        location = get_all_location(c, pid, sid, wid)
-        crop_image_from_well_rotate(i, location, join(out_sub_dir, 'c123'),
-                                    times16=False)
+        # Crop c123
+        for i in glob(join(cache_dir, 'c123/*.tif')):
+            sid = int(re.sub(r'^.*_.*_(\d).tif$'.format(wid), r'\1', i))
+            location = get_all_location(c, pid, sid, wid)
+            crop_image_from_well_rotate(i, location, join(out_sub_dir, 'c123'),
+                                        times16=False)
 
-    # Crop c45
-    for i in glob(join(cache_dir, 'c45/*.tif')):
-        sid = int(re.sub(r'^.*_.*_(\d).tif$'.format(wid), r'\1', i))
-        location = get_all_location(c, pid, sid, wid)
-        crop_image_from_well_rotate(i, location, join(out_sub_dir, 'c45'),
-                                    times16=False)
+        # Crop c45
+        for i in glob(join(cache_dir, 'c45/*.tif')):
+            sid = int(re.sub(r'^.*_.*_(\d).tif$'.format(wid), r'\1', i))
+            location = get_all_location(c, pid, sid, wid)
+            crop_image_from_well_rotate(i, location, join(out_sub_dir, 'c45'),
+                                        times16=False)
 
-    rmtree(cache_dir)
+        if not keep_cache:
+            rmtree(cache_dir)
 
 
 def rotate(image_name, output_dir):
@@ -571,19 +579,19 @@ def add_padding_with_size(output_dir, *input_dirs, show_max_name=False):
 
 if __name__ == '__main__':
     sql_path = './data/test/meta_data/extracted_features/24278.sqlite'
-    '''
     make_rgb_training_dir(24278, 'a15', '/Users/JayWong/Downloads', './train',
-                          sql_path)
+                          sql_path, crop_cell=False)
+    '''
     make_rgb_training_dir(24278, 'j12', '/Users/JayWong/Downloads', './train',
                           sql_path)
     make_rgb_training_dir(24278, 'p22', '/Users/JayWong/Downloads', './train',
                           sql_path)
     make_rgb_training_dir(24278, 'a13', '/Users/JayWong/Downloads', './train',
                           sql_path)
-    '''
     add_padding_with_size('out', 'train/24278_a13/c123',
                           'train/24278_a13/c45', 'train/24278_a15/c123',
                           'train/24278_a15/c45', 'train/24278_j12/c123',
                           'train/24278_j12/c45', 'train/24278_p22/c123',
                           'train/24278_p22/c45', show_max_name=True)
+    '''
 
