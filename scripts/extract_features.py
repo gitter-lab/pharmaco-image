@@ -3,6 +3,7 @@ import re
 import cv2
 import time
 import sqlite3
+import argparse
 import threading
 import pandas as pd
 import numpy as np
@@ -12,8 +13,9 @@ from os.path import join, exists, basename
 from glob import glob
 
 
-chemical_df = pd.read_csv("./data/test/meta_data/chemical_annotations" +
-                          "_smiles.csv")
+#chemical_df = pd.read_csv("./data/test/meta_data/chemical_annotations" +
+#                          "_smiles.csv")
+chemical_df = pd.read_csv("./chemical_annotations_smiles.csv")
 image_size = (696, 520)
 
 
@@ -63,13 +65,14 @@ class Plate():
                     'sid': [r[1]]
                 }
 
-    def make_rgb_train_dirs(self, output_dir, output_format='png'):
+    def make_rgb_train_dirs(self, output_dir, nprocs, output_format='png'):
         """
         Generate a training directory having a subdirectory for each pid+wid.
         All associated channels and DOF are stored in those subdirectories.
         Cells are merged into RGB scale by 123 channels, and 45 channels.
 
         Args:
+            nprocs: number of threads
             output_dir: the directory to save those subdirectories.
         """
         dies = {'ERSyto': 1,
@@ -81,39 +84,76 @@ class Plate():
         if not exists(output_dir):
             os.mkdir(output_dir)
 
-        for wid in self.well_dict:
-            # Make dir structure
-            out_sub_dir = join(output_dir, '{}_{}'.format(self.pid, wid))
+        lock = threading.Lock()
+        threads = []
+        lo = threading.local()
+        job_queue = []
+        well_dict = self.well_dict
+        pid = self.pid
+        input_dir = self.input_dir
 
-            if not exists(out_sub_dir):
-                os.mkdir(out_sub_dir)
-                os.mkdir(join(out_sub_dir, 'c123'))
-                os.mkdir(join(out_sub_dir, 'c45'))
+        class Worker(threading.Thread):
+            def __init__(self):
+                super(Worker, self).__init__()
 
-            for sid in self.well_dict[wid]['sid']:
-                channels = []
-                for d in dies:
-                    channel_dir = join(self.input_dir, '{}-{}'.format(self.pid,
-                                                                      d))
-                    images = [f for f in os.listdir(channel_dir) if
-                              re.search(r'^.*_{}_s{}_.*\.tif$'.format(
-                                  wid, sid), f)]
-                    channels.append(cv2.imread(join(channel_dir,
-                                                    images[0]), -1) * 16)
+            def run(self):
+                # Get the job
+                while True:
+                    lock.acquire()
+                    if len(job_queue) == 0:
+                        lock.release()
+                        return
+                    lo.wid = job_queue.pop()
+                    lock.release()
 
-                # Merge the channels and save to the output dir
-                black_image = np.zeros(channels[0].shape).astype(
-                    channels[0].dtype)
-                c123_name = join(out_sub_dir, 'c123/{}_{}_{}.{}'.format(
-                    self.pid, wid, sid, output_format))
-                c45_name = join(out_sub_dir, 'c45/{}_{}_{}.{}'.format(
-                    self.pid, wid, sid, output_format))
-                cv2.imwrite(c45_name, cv2.merge([channels[4],
-                                                 black_image,
-                                                 channels[3]]))
-                cv2.imwrite(c123_name, cv2.merge([channels[2],
-                                                  channels[1],
-                                                  channels[0]]))
+                    # Make dir structure
+                    lo.out_sub_dir = join(output_dir, '{}_{}'.format(pid,
+                                                                     lo.wid))
+
+                    if not exists(lo.out_sub_dir):
+                        os.mkdir(lo.out_sub_dir)
+                        os.mkdir(join(lo.out_sub_dir, 'c123'))
+                        os.mkdir(join(lo.out_sub_dir, 'c45'))
+
+                    for lo.sid in well_dict[lo.wid]['sid']:
+                        lo.channels = []
+                        for lo.d in dies:
+                            lo.channel_dir = join(input_dir,
+                                                  '{}-{}'.format(pid, lo.d))
+                            lo.images = [f for f in os.listdir(lo.channel_dir)
+                                         if re.search(r'^.*_{}_s{}_.*\.tif$'.
+                                                      format(lo.wid, lo.sid),
+                                                      f)]
+                            lo.channels.append(cv2.imread(
+                                join(lo.channel_dir, lo.images[0]), -1) * 16)
+
+                        # Merge the channels and save to the output dir
+                        lo.black_image = np.zeros(lo.channels[0].shape).astype(
+                            lo.channels[0].dtype)
+                        lo.c123_name = join(lo.out_sub_dir, 'c123/{}_{}_{}.{}'.
+                                            format(pid, lo.wid, lo.sid,
+                                                   output_format))
+                        lo.c45_name = join(lo.out_sub_dir, 'c45/{}_{}_{}.{}'.
+                                           format(pid, lo.wid, lo.sid,
+                                                  output_format))
+                        cv2.imwrite(lo.c45_name, cv2.merge([lo.channels[4],
+                                                            lo.black_image,
+                                                            lo.channels[3]]))
+                        cv2.imwrite(lo.c123_name, cv2.merge([lo.channels[2],
+                                                             lo.channels[1],
+                                                             lo.channels[0]]))
+
+        # Fill the job queue and launch workers
+        job_queue = [wid for wid in well_dict]
+        for t in range(nprocs):
+            thread = Worker()
+            thread.start()
+            time.sleep(1)
+            threads.append(thread)
+
+        # Wait for all threads to finish
+        for t in threads:
+            t.join()
 
     def extract_features(self, image_dir, nprocs, image_format='png'):
         """
@@ -150,6 +190,7 @@ class Plate():
         black = [0, 0, 0]
         pad_size = int((image_size[0] - image_size[1]) / 2)
         v3_img_size = (299, 299, 3)
+        pid = self.pid
 
         # Build threads
         class FeatureExtractor(threading.Thread):
@@ -170,7 +211,7 @@ class Plate():
                     lo.sub_dir = job_queue.pop()
                     lock.release()
 
-                    for lo.img_name in glob(join(lo.sub_dir, 'c123/*.{}'.\
+                    for lo.img_name in glob(join(lo.sub_dir, 'c123/*.{}'.
                                                  format(self.img_format))):
                         lo.img1 = cv2.imread(lo.img_name, -1)
                         lo.img2 = cv2.imread(lo.img_name.replace('c123',
@@ -201,13 +242,13 @@ class Plate():
                         np.savez(join(lo.sub_dir, npz_name),
                                  feature=lo.feature)
 
-
         # Filling the job queue
-        job_queue = [f.path for f in os.scandir(image_dir) if f.is_dir()]
+        job_queue = [f.path for f in os.scandir(image_dir) if f.is_dir() and
+                     str(pid) in f.path]
 
         # Start the jobs
         threads = []
-        for t in range(4):
+        for t in range(nprocs):
             thread = FeatureExtractor(image_format)
             thread.start()
             time.sleep(1)
@@ -219,9 +260,36 @@ class Plate():
 
 
 if __name__ == '__main__':
+    # Add cli
+    parser = argparse.ArgumentParser()
+    parser.add_argument("pid", help="the plate id", type=int)
+    parser.add_argument("input_dir", help="the input directory path")
+    parser.add_argument("output_dir", help="the path of output directory")
+    parser.add_argument("sql_path", help="the path of sql metadata database")
+    parser.add_argument("profile_path", help="the path of mean profile csv")
+    parser.add_argument("nprocs", help="number of threads", type=int)
+    args = parser.parse_args()
+
+    plate = Plate(args.pid,
+                  args.sql_path,
+                  args.profile_path,
+                  args.input_dir)
+    plate.make_rgb_train_dirs(args.output_dir, args.nprocs)
+    plate.extract_features(args.output_dir)
+
+    """
+    pid = 24278
     sql_path = './data/test/meta_data/extracted_features/24278.sqlite'
     input_dir = '/Users/JayWong/Downloads'
     profile_path = './data/test/meta_data/profiles/mean_well_profiles.csv'
-    plate = Plate(24278, sql_path, profile_path, input_dir)
-    # plate.make_rgb_train_dirs('./test')
-    plate.extract_features('./test', 1)
+    output_dir = './test'
+    nprocs = 4
+
+    plate = Plate(pid,
+                  sql_path,
+                  profile_path,
+                  input_dir)
+    plate.make_rgb_train_dirs(output_dir, nprocs)
+    plate.extract_features(output_dir, nprocs)
+    """
+
