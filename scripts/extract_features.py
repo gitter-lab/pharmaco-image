@@ -191,6 +191,7 @@ class Plate():
         pad_size = int((image_size[0] - image_size[1]) / 2)
         v3_img_size = (299, 299, 3)
         pid = self.pid
+        well_dict = self.well_dict
 
         # Build threads
         class FeatureExtractor(threading.Thread):
@@ -208,8 +209,14 @@ class Plate():
                     if len(job_queue) == 0:
                         lock.release()
                         return
+                    print(len(job_queue))
                     lo.sub_dir = job_queue.pop()
                     lock.release()
+
+                    # Get the wid
+                    lo.wid = re.sub(r'^\d*_(.*)$', r'\1', basename(lo.sub_dir))
+                    if well_dict[lo.wid]['cpd'] == "DMSO":
+                        lo.wid = "DMSO"
 
                     for lo.img_name in glob(join(lo.sub_dir, 'c123/*.{}'.
                                                  format(self.img_format))):
@@ -238,9 +245,9 @@ class Plate():
                         lo.feature = lo.feature.reshape(1, -1)
                         npz_name = basename(lo.img_name).replace('{}'.format(
                             self.img_format), 'npz')
-
                         np.savez(join(lo.sub_dir, npz_name),
-                                 feature=lo.feature)
+                                 feature=lo.feature,
+                                 cpd=lo.wid)
 
         # Filling the job queue
         job_queue = [f.path for f in os.scandir(image_dir) if f.is_dir() and
@@ -275,7 +282,7 @@ if __name__ == '__main__':
                   args.profile_path,
                   args.input_dir)
     plate.make_rgb_train_dirs(args.output_dir, args.nprocs)
-    plate.extract_features(args.output_dir)
+    plate.extract_features(args.output_dir, args.nprocs)
 
     """
     pid = 24278
@@ -289,7 +296,6 @@ if __name__ == '__main__':
                   sql_path,
                   profile_path,
                   input_dir)
-    plate.make_rgb_train_dirs(output_dir, nprocs)
+    #plate.make_rgb_train_dirs(output_dir, nprocs)
     plate.extract_features(output_dir, nprocs)
     """
-
