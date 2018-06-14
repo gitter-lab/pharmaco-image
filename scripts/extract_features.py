@@ -5,8 +5,9 @@ import time
 import sqlite3
 import argparse
 import threading
-import pandas as pd
 import numpy as np
+import pandas as pd
+from shutil import rmtree
 from keras.models import Model
 from keras.applications.inception_v3 import InceptionV3
 from os.path import join, exists, basename
@@ -248,6 +249,13 @@ class Plate():
                         np.savez(join(lo.sub_dir, npz_name),
                                  feature=lo.feature,
                                  cpd=lo.wid)
+
+                    # Remove the image to save space after iterating all the
+                    # images inside of those two dirs
+                    if exists(join(lo.sub_dir, 'c123')):
+                        rmtree(join(lo.sub_dir, 'c123'))
+                    if exists(join(lo.sub_dir, 'c45')):
+                        rmtree(join(lo.sub_dir, 'c45'))
 
         # Filling the job queue
         job_queue = [f.path for f in os.scandir(image_dir) if f.is_dir() and
