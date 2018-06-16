@@ -1,4 +1,5 @@
 import os
+import re
 import numpy as np
 import pandas as pd
 from os.path import join
@@ -51,10 +52,14 @@ def generate_data(input_dir):
     features = []
     labels = []
     for sub in [f.path for f in os.scandir(input_dir)]:
+        plate = re.sub(r'^()_.*$', r'\1', sub)
         for npz in glob(join(sub, '*.npz')):
             loaded_npz = np.load(npz)
             features.append(loaded_npz['feature'])
-            labels.append(loaded_npz['cpd'].tolist())
+            labels.append('{}_{}'.format(
+                plate,
+                loaded_npz['cpd'].tolist()
+            ))
 
     # Concatenate the features into size (num_sample, num_feature)
     features = np.vstack(features)
