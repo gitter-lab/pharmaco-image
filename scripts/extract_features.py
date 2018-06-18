@@ -8,6 +8,7 @@ import threading
 import numpy as np
 import pandas as pd
 from shutil import rmtree
+from json import dump
 from keras.models import Model
 from keras.applications.inception_v3 import InceptionV3
 from os.path import join, exists, basename
@@ -18,6 +19,163 @@ from glob import glob
 #                          "_smiles.csv")
 chemical_df = pd.read_csv("./chemical_annotations_smiles.csv")
 image_size = (696, 520)
+
+
+def get_second_key(c, pid, sid, wid):
+    """
+    Get the second key to query Cells table (TableNumber and ImageNumber).
+    Args:
+        c: sqlite3 cursor
+        pid: int, plate index
+        sid: int, site index
+        wid: string, well index
+    """
+    # Get the second combined key
+    c.execute(
+        """
+        SELECT TableNumber, ImageNumber
+        FROM Image
+        WHERE Image_Metadata_Plate = {} AND Image_Metadata_Site = '{}'
+            AND Image_Metadata_Well = '{}'
+        """.format(pid, sid, wid)
+    )
+
+    result = c.fetchall()
+    return result[0]
+
+
+def get_all_location(c, pid, sid, wid, output=None):
+    """
+    Get the location data in all cells in the well.
+    args:
+        c: sqlite3 cursor
+        pid: int, plate index
+        sid: int, site index
+        wid: string, well index
+        output: string, the output json path
+    return:
+        A dict mapping cell index to its location data.
+    """
+    # Get the total number of cells in this well
+    c.execute(
+        """
+        SELECT Image_Count_Cells
+        FROM Image
+        WHERE Image_Metadata_Plate = {} AND Image_Metadata_Site = '{}'
+                AND Image_Metadata_Well = '{}'
+        """.format(pid, sid, wid)
+    )
+
+    cell_count = int(c.fetchall()[0][0])
+
+    # Get the secondary key
+    tid, iid = get_second_key(c, pid, sid, wid)
+
+    # Get the location data of all cells
+    c.execute(
+        """
+        SELECT Cells_AreaShape_Center_X, Cells_AreaShape_Center_Y,
+            Cells_AreaShape_MajorAxisLength, Cells_AreaShape_MinorAxisLength,
+            Cells_AreaShape_Orientation
+        FROM Cells
+        WHERE TableNumber = '{}' AND ImageNumber = {} AND
+            ObjectNumber BETWEEN 1 AND {};
+        """.format(tid, iid, cell_count)
+    )
+
+    location = c.fetchall()
+
+    # Return a dict
+    dic = dict(zip(range(1, cell_count + 1), location))
+
+    # Save the dictionary if needed
+    if output:
+        dump(dic, open(output, 'w'), indent=4, sort_keys=True)
+
+    return dic
+
+
+def crop_image_from_well_rotate(img_name, location, save_dir, times16=True):
+    """
+    Crop single cell images from the img_name image. This function will rotate
+    the whole image directly so the relative angle of each cell is not
+    perversed.
+
+    args:
+        img_name: string, the path to the image
+        location: a location dictionary encoding the cell index and position
+        save_path: string, the directory name where images are saved
+        times16: if to multiply the result image by 16
+    """
+    for k in location:
+        image = cv2.imread(img_name, -1)
+
+        height, width = image.shape[:2]
+        image_center = (width / 2, height / 2)
+
+        # Get the bounding box information
+        pos = location[k]
+        x, y = int(pos[0]), int(pos[1])
+        half_major, half_minor = round(pos[2] / 2), round(pos[3] / 2)
+        degree = pos[4]
+
+        # Rotate the whole image
+        rotate_matrix = cv2.getRotationMatrix2D(image_center, degree, 1)
+
+        # Use cos and sin to compute the smallest rec to contain the rotated
+        # image so we are not losing pixels
+        abs_cos = abs(rotate_matrix[0, 0])
+        abs_sin = abs(rotate_matrix[0, 1])
+
+        bound_w = int(height * abs_sin + width * abs_cos)
+        bound_h = int(height * abs_cos + width * abs_sin)
+
+        # Add translation to the rotation matrix
+        rotate_matrix[0, 2] += bound_w / 2 - image_center[0]
+        rotate_matrix[1, 2] += bound_h / 2 - image_center[1]
+
+        # Transform the whole image
+        rotated_image = cv2.warpAffine(image, rotate_matrix,
+                                       (bound_w, bound_h))
+
+        # Transform the center
+        rotated_x, rotated_y = cv2.transform(np.array([[[x, y]]]),
+                                             rotate_matrix)[0][0].astype(int)
+
+        # Get the bounding rectangle
+        points = np.array([[
+            [rotated_x - half_major, rotated_y - half_minor],
+            [rotated_x + half_major, rotated_y - half_minor],
+            [rotated_x + half_major, rotated_y + half_minor],
+            [rotated_x - half_major, rotated_y + half_minor]
+        ]])
+
+        points = points.astype(int).reshape((-1, 1, 2))
+
+        # Crop the rectangle
+        x, y, w, h = (rotated_x - half_major, rotated_y - half_minor,
+                      half_major * 2, half_minor * 2)
+
+        # Fix out-of-frame problem
+        if x >= bound_w or y >= bound_h:
+            print("Left point of the cropping rec out of range.")
+            exit(1)
+        if x < 0:
+            w += x
+            x = 0
+        if y < 0:
+            h += y
+            y = 0
+
+        cropped = rotated_image[y: y + h, x: x + w].copy()
+        cropped = cropped * 16 if times16 else cropped
+
+        # Save the masked_image to the output directory
+        new_name = re.sub(r'^(.*)\.tif$', r'\1' + '_c{:03}.tif'.format(int(k)),
+                          basename(img_name))
+        new_name = join(save_dir, new_name)
+
+        cv2.imwrite(new_name, cropped)
 
 
 class Plate():
