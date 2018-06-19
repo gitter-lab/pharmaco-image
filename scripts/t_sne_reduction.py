@@ -42,7 +42,7 @@ def tsne_reduction(x, labels, output_dir, dim=2, perplexity=50,
     df['label'] = labels
 
     # Save the df
-    df.to_csv(join(output_dir, "tsne_perplexity_{}.csv".format(perplexity)),
+    df.to_csv(join(output_dir, "tsne_{}d_p{}.csv".format(dim, perplexity)),
               index=False)
 
 

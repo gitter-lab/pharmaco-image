@@ -4,9 +4,9 @@ library("latex2exp")
 library("randomcoloR")
 
 
+# Plot the t-sne plot for one dataframe
 plot_plate = function(df, channel, x_low, x_high, y_low, y_high,
                       fold_size=30){
-    # Plot the t-sne plot for one dataframe
     # Make sure DMSO is always in the sub-plots
     x = split(df, df$label)
     dmso_df = x[[sprintf("%s_DMSO", channel)]]
@@ -55,6 +55,50 @@ plot_plate = function(df, channel, x_low, x_high, y_low, y_high,
 }
 
 
+# Split the t-sne data of one plate into n subsets with size fold_size
+# Each subset have all the DMSO data in this plate
+# Subset is assigned with colors
+get_json = function(df, channel, fold_size=30, dim=3){
+    x = split(df, df$label)
+    
+    dmso_df = x[[sprintf("%s_DMSO", channel)]]
+    x[sprintf("%s_DMSO", channel)] = NULL
+    
+    # Add a fixed color for DMSO, and other disinctive colors for others
+    dmso_df$color = rep("#cadfd9", dim(dmso_df)[1])
+    my_color = distinctColorPalette(fold_size)
+    
+    # Fill the list to encode JSON
+    results = list()
+    
+    for (i in 1:ceiling(length(x) / fold_size)){
+        print(sprintf("Encoding %d of %s", i, channel))
+        upper = min(i * fold_size, length(x))
+        
+        # Preprocess the x list to add a color column
+        count = 1
+        for (t in ((i - 1) * fold_size + 1) : upper){
+            x[[t]]$color = rep(my_color[count], dim(x[[t]])[1])
+            count = count + 1
+        }
+        cur_df = rbind(dmso_df, x[[(i - 1) * fold_size + 1]])
+        for (t in ((i - 1) * fold_size + 2) : upper){
+            cur_df = rbind(cur_df, x[[t]])
+        }
+        
+        # Convert the dfs to a named list
+        cur_list = list()
+        cur_list[["x"]] = cur_df$x
+        cur_list[["y"]] = cur_df$y
+        cur_list[["z"]] = cur_df$z
+        cur_list[["label"]] = cur_df$label
+        cur_list[["color"]] = cur_df$color
+        results[[i]] = cur_list
+    }
+    # Save the json file
+    write(toJSON(results, pretty=T), file=sprintf("%s.json", channel))
+}
+
 df = read.csv("tsne_perplexity_50.csv")
 
 # Fix the appropriate scale fro all plots
@@ -71,5 +115,7 @@ for (channel in channels){
     channel_df = df[grep(channel, df$label),]
     # R requires to refactor after subsetting
     channel_df$label = factor(channel_df$label)
-    plot_plate(channel_df, channel, x_low, x_high, y_low, y_high)
+
+    # plot_plate(channel_df, channel, x_low, x_high, y_low, y_high)
+    # get_json(channel_df, channel)
 }
