@@ -1,5 +1,4 @@
 import keras
-import os
 import sys
 import numpy as np
 from keras.models import Model
@@ -11,8 +10,6 @@ from keras.layers import Dense, GlobalAveragePooling2D, Input
 from keras.callbacks import EarlyStopping
 from keras.layers import Activation, BatchNormalization, Conv2D, \
     AveragePooling2D
-from skimage.io import imread
-from skimage.transform import resize
 from sklearn.model_selection import train_test_split
 from os.path import join, basename, exists
 from glob import glob
@@ -27,39 +24,31 @@ class DataGenerator(keras.utils.Sequence):
     > If you want to modify your dataset between epochs you may implement
     > on_epoch_end. The method __getitem__ should return a complete batch.
     """
-    def __init__(self, image_names, labels, batch_size=32,
-                 dim=(299, 299, 3), num_classes=2,
-                 bottle_dir=None, data_dir=None, image_format='jpg'):
+    def __init__(self, bottlenecks, labels, channel, batch_size=32,
+                 dim=(299, 299, 3), num_classes=2):
         """
         args:
-            image_names: array of the image path
+            bottlenecks: array of the bottleneck path
             labels: array of corresponding labels
+            channel: 0 -> channel 123, 1 -> channel 45
             batch_size: number of training samples per epoch
             dim: the default is for inception v3
             num_classes: the default is for binary classification
-            bottle_dir: if given, then this instance loads bottleneck features
-            data_dir: if bottle_dir is given, must provide data_dir
-            image_format: the format of the image, support jpg, jpeg, png
         """
-        if bool(bottle_dir) != bool(data_dir):
-            print("Must provide data_dir if you want to use bottleneck.")
-            exit(1)
 
-        self.image_names = image_names
+        self.bottlenecks = bottlenecks
         self.labels = labels
+        self.channel = channel
         self.batch_size = batch_size
         self.dim = dim
         self.num_classes = num_classes
-        self.bottle_dir = bottle_dir
-        self.data_dir = data_dir
-        self.indexes = np.arange(len(self.image_names))
-        self.format = image_format
+        self.indexes = np.arange(len(self.bottlenecks))
 
     def __len__(self):
         """
         This method tells keras how many times to go through the whole sample.
         """
-        return int(np.ceil(len(self.image_names) / float(self.batch_size)))
+        return int(np.ceil(len(self.bottlenecks) / float(self.batch_size)))
 
     def __getitem__(self, index):
         """
@@ -67,20 +56,11 @@ class DataGenerator(keras.utils.Sequence):
         """
         batch_indexes = self.indexes[index * self.batch_size:
                                      (index + 1) * self.batch_size]
-        # Load the images
-        if self.bottle_dir:
-            # Get the corresponding bottleneck path
-            batch_names = [self.image_names[i] for i in batch_indexes]
-            batch_bottle_names = [x.replace(self.data_dir, self.bottle_dir)
-                                  .replace('.{}'.format(self.format), '.npz')
-                                  for x in batch_names]
-            batch_x = np.array([get_bottleneck_feature(p) for p in
-                                batch_bottle_names])
-        else:
-            batch_names = [self.image_names[i] for i in batch_indexes]
-            batch_x = np.array([resize(imread(name, as_grey=True),
-                                       self.dim)
-                                for name in batch_names])
+
+        # Get the corresponding bottleneck path
+        batch_names = [self.bottlenecks[i] for i in batch_indexes]
+        batch_x = np.vstack([get_bottleneck_feature(p, self.channel)
+                             for p in batch_names])
 
         # Load the labels
         batch_label = np.array([self.labels[i] for i in batch_indexes])
@@ -90,14 +70,11 @@ class DataGenerator(keras.utils.Sequence):
         return batch_x, batch_y
 
 
-def partition_data(data_dir, batch_size=32, train_percentage=0.6,
-                   vali_percentage=0.2, test_percentage=0.2, bottle_dir=None,
-                   image_format='jpg'):
+def partition_data(data_dir, channel, batch_size=32, train_percentage=0.6,
+                   vali_percentage=0.2, test_percentage=0.2):
     """
     Partition the data into train, validation and test set based on the given
     proportion. Each proportion should be a float in (0, 1).
-
-    If bottle_dir is provided, then we load bottlenecked feature instead.
 
     Return three keras data generator (DataGenerator).
     """
@@ -115,9 +92,9 @@ def partition_data(data_dir, batch_size=32, train_percentage=0.6,
         # Update the mapping
         label_mapping[basename(sub_dir)] = cur_label
 
-        # Load all the jpg/png format files
-        for image_name in glob(join(sub_dir, "*.{}".format(image_format))):
-            names.append(image_name)
+        # Load all the bottlenecks
+        for bottle_name in glob(join(sub_dir, "*.npz")):
+            names.append(bottle_name)
             labels.append(cur_label)
 
         # Update to the next label
@@ -143,15 +120,13 @@ def partition_data(data_dir, batch_size=32, train_percentage=0.6,
     split_mapping['test'] = name_test.tolist()
 
     # Encode each partition into the DataGenerator
-    return DataGenerator(name_train, label_train, bottle_dir=bottle_dir,
-                         data_dir=data_dir, batch_size=batch_size,
-                         image_format=image_format), \
-        DataGenerator(name_vali, label_vali, bottle_dir=bottle_dir,
-                      data_dir=data_dir, batch_size=batch_size,
-                      image_format=image_format), \
-        DataGenerator(name_test, label_test, bottle_dir=bottle_dir,
-                      data_dir=data_dir, batch_size=batch_size,
-                      image_format=image_format), \
+    nc = len(label_mapping)
+    return DataGenerator(name_train, label_train, channel,
+                         batch_size=batch_size, num_classes=nc), \
+        DataGenerator(name_vali, label_vali, channel,
+                      batch_size=batch_size, num_classes=nc), \
+        DataGenerator(name_test, label_test, channel,
+                      batch_size=batch_size, num_classes=nc), \
         label_mapping, \
         split_mapping
 
@@ -227,38 +202,12 @@ def retrain(num_class, train_generator, vali_generator, epoch=1,
     return hist
 
 
-def create_bottleneck_file(image_path, image_size, bottleneck_model,
-                           bottle_dir, image_format='jpg'):
-    """
-    Extract features from the image using the bottleneck_model, then
-    save the features in the bottle_dir with the same file name (txt format).
-    """
-    # Check if the bottleneck file has been created
-    image_name = basename(image_path)
-    bottle_path = join(bottle_dir, image_name.replace(
-        '.{}'.format(image_format),
-        '.npz'
-    ))
-    if(exists(bottle_path)):
-        print("bottleneck for {} exits.".format(image_name))
-        return
-
-    # Load image
-    image_data = np.array([resize(imread(image_path, as_grey=True),
-                                  image_size)])
-
-    # Get feature
-    bottleneck_features = bottleneck_model.predict(image_data)
-    bottleneck_features = np.squeeze(bottleneck_features)
-
-    # Save it as a txt file
-    print("Creating bottleneck for {}".format(image_name))
-    np.savez(bottle_path, bottleneck_features)
-
-
-def get_bottleneck_feature(bottle_path):
+def get_bottleneck_feature(bottle_path, channel):
     """
     Load the bottleneck feature of the image from the cached file.
+    Args:
+        bottle_path: path to the npz file
+        channel: 0 -> chanel 123, 1 -> chanel 45
     """
     # Check if the bottleneck has been created.
     if(not exists(bottle_path)):
@@ -267,37 +216,15 @@ def get_bottleneck_feature(bottle_path):
         return
 
     # Load the bottleneck feature
-    bottleneck_features = np.load(bottle_path)['arr_0']
+    bottleneck_features = np.load(bottle_path)['feature']
+
+    # Each bottleneck file has two features
+    if channel == 0:
+        bottleneck_features = bottleneck_features[:, :2048]
+    else:
+        bottleneck_features = bottleneck_features[:, 2048:]
 
     return bottleneck_features
-
-
-def create_bottlenecks(data_dir, image_size, bottleneck_model, bottle_dir,
-                       image_format='jpg'):
-    """
-    Create bottleneck files for all the images in the train_dir, and save the
-    bottleneck files in bottle_dir with the same directory structure.
-    """
-    # Create bottleneck directory if it does not exist
-    if(not exists(bottle_dir)):
-        os.makedirs(bottle_dir)
-
-    count = 0
-    for sub_dir in glob(join(data_dir, '*')):
-        # Copy the same file system structure to bottle_dir
-        bottle_sub_dir = join(bottle_dir, basename(sub_dir))
-        if(not exists(bottle_sub_dir)):
-            os.makedirs(bottle_sub_dir)
-
-        # Create bottleneck files
-        for image_path in glob(join(sub_dir, "*.{}".format(image_format))):
-            create_bottleneck_file(image_path,
-                                   image_size,
-                                   bottleneck_model,
-                                   bottle_sub_dir,
-                                   image_format=image_format)
-            count += 1
-    print("Created bottlenecks for {} images".format(count))
 
 
 # This function is copied from Keras's implementation of Inception_v3
@@ -340,7 +267,7 @@ def conv2d_bn(x, filters, num_row, num_col, padding='same', strides=(1, 1),
     return x
 
 
-def create_model_one_layer():
+def create_model_one_layer(num_classes):
     """
     Create the model we were using in TF version.
     """
@@ -353,14 +280,14 @@ def create_model_one_layer():
 
     # Create training model
     bottleneck_input = Input(shape=(2048, ))
-    predictions = Dense(2, activation='softmax')(bottleneck_input)
+    predictions = Dense(num_classes, activation='softmax')(bottleneck_input)
     train_model = Model(inputs=bottleneck_input,
                         outputs=predictions)
 
     return bottleneck_model, train_model
 
 
-def create_model_two_layers():
+def create_model_two_layers(num_classes):
     """
     Retrain the last two mixed_9 and mixed_10 layers.
 
@@ -421,7 +348,7 @@ def create_model_two_layers():
         )
 
     x = GlobalAveragePooling2D(name='avg_pool')(x)
-    predictions = Dense(2, activation='softmax')(x)
+    predictions = Dense(num_classes, activation='softmax')(x)
     train_model = Model(inputs=bottleneck_input,
                         outputs=predictions)
 
@@ -430,51 +357,45 @@ def create_model_two_layers():
 
 if __name__ == "__main__":
     # Load constants
-    train_percentage = 0.6
+    train_percentage = 0.8
     vali_percentage = 0.2
-    test_percentage = 0.2
+    test_percentage = 0
 
-    data_dir = "./train_data"
-    bottle_dir = "./train_resource/bottleneck"
+    data_dir = "./features_24277"
+    channel = 0
 
-    image_size = (299, 299, 3)
-    image_format = 'png'
-
-    epoch = 4000
+    epoch = 100
     patience = 100
-    batch_size = 16
-    save_model_path = './train_output/model.h5'
+    batch_size = 8
+    save_model_path = './train_output/model_{}.h5'.format(channel)
     nproc = 8
-    lr = 0.0001
+    lr = 0.5
 
     if len(sys.argv) > 1:
-        batch_size = int(sys.argv[1])
-        lr = float(sys.argv[2])
-
-    class_weights = {
-        0: 2.0,
-        1: 1.0
-    }
-
-    bottleneck_model, train_model = create_model_two_layers()
-
-    # Create bottlenecks
-    create_bottlenecks(data_dir, image_size, bottleneck_model, bottle_dir,
-                       image_format=image_format)
+        channel = sys.argv[1]
 
     # Partition and load our images
     train, vali, test, mapping, split_mapping = partition_data(
         data_dir,
+        channel,
         train_percentage=train_percentage,
         vali_percentage=vali_percentage,
         test_percentage=test_percentage,
-        bottle_dir=bottle_dir,
         batch_size=batch_size,
-        image_format=image_format
     )
 
+    # The dataset is highly unbalanced, so we want to weight down the weight
+    # of dmso
+    num_classes = len(mapping)
+    class_weights = {}
+    for i in range(num_classes):
+        class_weights[i] = 1.0
+    class_weights[mapping['24277_dmso']] = 0.15
+
+    bottleneck_model, train_model = create_model_one_layer(num_classes)
+
     # Start training
-    hist = retrain(2, train, vali,
+    hist = retrain(num_classes, train, vali,
                    epoch=epoch, nproc=nproc, lr=lr,
                    save_model_path=save_model_path, train_model=train_model,
                    class_weights=class_weights,
