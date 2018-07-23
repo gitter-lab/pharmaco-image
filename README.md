@@ -2,7 +2,7 @@
 
 ## Data Exploration
 
-View the following Jupyter notebooks for some insights of [Human U2OS cells dataset](http://www.cellimagelibrary.org/pages/project_20269).
+View the following Jupyter notebooks for some insights of [Human U2OS cells dataset](http://www.cellimagelibrary.org/pages/project_20269) ([GigaScience dataset](http://gigadb.org/dataset/view/id/100351/File_page/2)).
 
 |Notebook|Description|
 |:---:|:---:|
