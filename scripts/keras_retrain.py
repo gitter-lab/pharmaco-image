@@ -364,7 +364,7 @@ if __name__ == "__main__":
     data_dir = "./features_24277"
     channel = 0
 
-    epoch = 100
+    epoch = 500
     patience = 100
     batch_size = 8
     save_model_path = './train_output/model_{}.h5'.format(channel)
