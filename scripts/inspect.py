@@ -86,10 +86,10 @@ if __name__ == '__main__':
                 os.remove("./{}-{}.zip".format(pid, c))
 
             # Create an output dir for store the merged images
-            os.mkdir(join(output, str(pid)))
+            os.mkdir(join(output, str(g), str(pid)))
 
         # Merge images
-        merge_images(pid, wid, sid, g, out_dir=join(output, str(pid)))
+        merge_images(pid, wid, sid, g, out_dir=join(output, str(g), str(pid)))
         last_pid = pid
 
     for c in raw_channels:
