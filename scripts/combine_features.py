@@ -2,8 +2,10 @@ import numpy as np
 import re
 from glob import glob
 from os.path import basename
+from json import load
 
 features, names, sids = [], [], []
+plate_349 = load(open("plate_349.json", 'r'))
 pids = []
 
 # Iterate through all the plates, and combine their features together
@@ -20,7 +22,7 @@ for i in range(length):
     pid = re.sub(r'(\d+)_.+_\d+\.npz', r'\1', name)
     sid = int(re.sub(r'\d+_.+_(\d+)\.npz', r'\1', name))
 
-    if pid in ['24789', '25575', '26795']:
+    if pid not in plate_349:
         print(pid)
         continue
 
@@ -39,5 +41,5 @@ for i in range(length):
 # Save the combined features
 features = np.vstack(features)
 np.savez("combined_feature.npz", features=features, names=names)
-
+np.savez("combined_pids.npz", pids=pid)
 print(len(set(pids)))
