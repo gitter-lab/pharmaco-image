@@ -15,7 +15,7 @@ def merge_images(pid, wid, sid, g, out_dir='./'):
     """
     Merge images from 5 channels for all 6 snapshots.
     """
-    print(pid, wid)
+    print(pid, wid, sid, g)
     # Load image names
     paths = [p.format(pid) for p in raw_paths]
     image_names, images = [], []
@@ -29,6 +29,9 @@ def merge_images(pid, wid, sid, g, out_dir='./'):
             error = "Found more than one file for sid={} in {}"
             error = error.format(sid, p)
             raise ValueError(error)
+        if len(cur_file) == 0:
+            print("0 cur files")
+            return
         image_names.append(cur_file[0])
 
     # Read the images
@@ -44,6 +47,11 @@ def merge_images(pid, wid, sid, g, out_dir='./'):
     cv2.imwrite(join(out_dir, "{}_{}_s{}_123_{}.png".format(pid, wid, sid, g)),
                 cv2.merge([images[2], images[1], images[0]]))
 
+    # Also save the original image
+    for c in range(5):
+        cv2.imwrite(join(out_dir, "{}_{}_s{}_c{}_{}.png".format(
+            pid, wid, sid, c, g)), images[c])
+
 
 if __name__ == '__main__':
     output = "./output"
@@ -53,7 +61,7 @@ if __name__ == '__main__':
     with open("args.txt", 'r') as fp:
         lines = fp.readlines()
         for line in lines:
-            words = line.replace('\n', '').split(',')
+            words = line.replace('\n', '').replace(' ', '').split(',')
             pid = int(words[0])
             wid = words[1]
             sid = int(words[2])
@@ -86,7 +94,7 @@ if __name__ == '__main__':
                 os.remove("./{}-{}.zip".format(pid, c))
 
             # Create an output dir for store the merged images
-            os.mkdir(join(output, str(g), str(pid)))
+            os.makedirs(join(output, str(g), str(pid)))
 
         # Merge images
         merge_images(pid, wid, sid, g, out_dir=join(output, str(g), str(pid)))
