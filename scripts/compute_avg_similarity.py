@@ -31,8 +31,11 @@ def compute_avg_similarity(input_dir, aid):
     length = int(re.sub(r'dissimilarity_matrix_(\d+)_\d+_\d+.dat',
                         r'\1',
                         base_name))
-    mat = np.array(np.memmap(base_name, dtype='float16', mode='r',
-                             shape=(length, length)))
+    mat = np.memmap(base_name, dtype='float16', mode='r',
+                    shape=(length, length))
+
+    # Need to change mat to float64 to avoid float overflow
+    mat = np.array(mat, dtype='float64')
     mat_sum = np.sum(mat) / 2
     pair_num = (length + 1) * length / 2
 
