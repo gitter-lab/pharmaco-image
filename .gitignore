@@ -6,3 +6,5 @@ __pycache__
 *.pb
 data
 resource
+results
+temp*
