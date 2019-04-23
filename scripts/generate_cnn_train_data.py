@@ -3,7 +3,9 @@ import re
 import cv2
 import os
 import zipfile
+import time
 from sys import argv
+from datetime import datetime
 from glob import glob
 from os.path import join, basename
 from shutil import copyfile, rmtree
@@ -17,7 +19,8 @@ raw_paths = ['./{}-{}/*.tif'.format('{}', c) for c in raw_channels]
 def select_wells(assay):
 
     # Load the output matrix and each row's corresponding pid, wid
-    output_data = np.load('./output_matrix_convert_collision.npz')
+    output_data = np.load('./output_matrix_convert_collision.npz',
+                          allow_pickle=True)
     output_matrix = output_data['output_matrix']
     pid_wids = output_data['pid_wids']
 
@@ -91,8 +94,10 @@ def extract_instance(pid, wid, label, output_dir='./output'):
         )), img=image_instance)
 
 
-def extract_plate(pid, selected_well_dict, output_dir='./output'):
-    print('Working on plate {} on process {}'.format(pid, os.getpid()))
+def extract_plate(pid, selected_well_dict, output_dir='./output', jid=0):
+    start = time.time()
+    print('Job {}: start plate {} on process {}'.format(jid, pid,
+                                                        os.getpid()))
 
     # Copy 5 zip files from gluster to the current directory
     for c in raw_channels:
@@ -113,20 +118,37 @@ def extract_plate(pid, selected_well_dict, output_dir='./output'):
     for c in raw_channels:
         rmtree("./{}-{}".format(pid, c))
 
+    print('\t {}: Job {} finished after {:.4f} seconds'.format(
+        datetime.now().strftime('%H:%M:%S'), jid, time.time() - start
+    ))
+
+
+def error_callback(error):
+    print(error)
+
 
 if __name__ == '__main__':
 
     # Create the well dictionary using the command line argument
     assay = int(argv[1])
+    nproc = int(argv[2])
+
+    print("There are {} cpus on this node.".format(os.cpu_count()))
+    print("Using {} workers.".format(nproc))
+
     selected_well_dict = select_wells(assay)
     pids = selected_well_dict.keys()
 
     # Use multiprocessing to work on different plates at the same time
     # Prepare arguments for workers
-    args = [(pid, selected_well_dict, './output') for pid in pids]
+    args = []
+
+    args = [(enum[1], selected_well_dict, './output', enum[0])
+            for enum in enumerate(pids)]
 
     # Feed args to nproc workers
-    pool = Pool()
-    pool.starmap_async(extract_plate, args)
+    pool = Pool(nproc)
+    for arg in args:
+        pool.apply_async(extract_plate, arg, error_callback=error_callback)
     pool.close()
     pool.join()
