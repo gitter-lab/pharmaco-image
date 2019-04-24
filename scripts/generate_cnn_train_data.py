@@ -4,7 +4,7 @@ import cv2
 import os
 import zipfile
 import time
-from sys import argv
+from sys import argv, stdout
 from datetime import datetime
 from glob import glob
 from os.path import join, basename
@@ -88,16 +88,22 @@ def extract_instance(pid, wid, label, output_dir='./output'):
         # Store each image as a 5 channel 3d matrix
         image_instance = np.array(images)
 
+        # Convert the 2d image on each channel to a square image
+        assert(image_instance.shape == (5, 520, 696))
+        padding = np.zeros((5, 696, 696)).astype(image_instance.dtype)
+        padding[:, 88:608, :] = image_instance
+
         # Save the instance with its label
         np.savez(join(output_dir, 'img_{}_{}_{}_{}.npz'.format(
             pid, wid, sid, label
-        )), img=image_instance)
+        )), img=padding)
 
 
 def extract_plate(pid, selected_well_dict, output_dir='./output', jid=0):
     start = time.time()
     print('Job {}: start plate {} on process {}'.format(jid, pid,
                                                         os.getpid()))
+    stdout.flush()
 
     # Copy 5 zip files from gluster to the current directory
     for c in raw_channels:
@@ -121,6 +127,7 @@ def extract_plate(pid, selected_well_dict, output_dir='./output', jid=0):
     print('\t {}: Job {} finished after {:.4f} seconds'.format(
         datetime.now().strftime('%H:%M:%S'), jid, time.time() - start
     ))
+    stdout.flush()
 
 
 def error_callback(error):
@@ -138,6 +145,7 @@ if __name__ == '__main__':
 
     selected_well_dict = select_wells(assay)
     pids = selected_well_dict.keys()
+    print("Need to pull {} plates.".format(len(pids)))
 
     # Use multiprocessing to work on different plates at the same time
     # Prepare arguments for workers
