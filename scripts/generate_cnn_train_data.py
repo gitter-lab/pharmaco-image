@@ -3,9 +3,8 @@ import re
 import cv2
 import os
 import zipfile
-import time
-from sys import argv, stdout
-from datetime import datetime
+from time import sleep
+from sys import argv
 from glob import glob
 from os.path import join, basename
 from shutil import copyfile, rmtree
@@ -17,6 +16,15 @@ raw_paths = ['./{}-{}/*.tif'.format('{}', c) for c in raw_channels]
 
 
 def select_wells(assay):
+    """
+    Given an assay id, select pid and wid to extract images from.
+
+    Args:
+        assay(int): assay index (column of the output matrix)
+
+    Return:
+        a dictionary: {pid: [(wid, label), (wid, label)...]}
+    """
 
     # Load the output matrix and each row's corresponding pid, wid
     output_data = np.load('./output_matrix_convert_collision.npz',
@@ -54,6 +62,16 @@ def select_wells(assay):
 
 
 def extract_instance(pid, wid, label, output_dir='./output'):
+    """
+    Extract all images in the given pid and wid pair (many fields of view).
+    Then, it saves the extracted 5-channel images as a tensor in `output_dir`.
+
+    Args:
+        pid(int): plate id
+        wid(int): well id
+        label(int): 1 -> activated, 0 -> not activated
+        output_dir(str): directory to store image tensors.
+    """
 
     paths = [p.format(pid) for p in raw_paths]
 
@@ -88,22 +106,24 @@ def extract_instance(pid, wid, label, output_dir='./output'):
         # Store each image as a 5 channel 3d matrix
         image_instance = np.array(images)
 
-        # Convert the 2d image on each channel to a square image
-        assert(image_instance.shape == (5, 520, 696))
-        padding = np.zeros((5, 696, 696)).astype(image_instance.dtype)
-        padding[:, 88:608, :] = image_instance
-
         # Save the instance with its label
-        np.savez(join(output_dir, 'img_{}_{}_{}_{}.npz'.format(
+        np.savez_compressed(join(output_dir, 'img_{}_{}_{}_{}.npz'.format(
             pid, wid, sid, label
-        )), img=padding)
+        )), img=image_instance, )
 
 
-def extract_plate(pid, selected_well_dict, output_dir='./output', jid=0):
-    start = time.time()
-    print('Job {}: start plate {} on process {}'.format(jid, pid,
-                                                        os.getpid()))
-    stdout.flush()
+def extract_plate(pid, selected_well_dict, output_dir='./output'):
+    """
+    Wrapper of `extract_instance()`. Copy zip files from gluster before
+    extracting instances from one plate.
+
+    Args:
+        pid(int): plate id
+        selected_well_dict(dict): {pid: [(wid, label), (wid, label)...]}
+        output_dir(str): directory to store extracted tensors
+    """
+
+    print('Working on plate {} on process {}'.format(pid, os.getpid()))
 
     # Copy 5 zip files from gluster to the current directory
     for c in raw_channels:
@@ -124,15 +144,6 @@ def extract_plate(pid, selected_well_dict, output_dir='./output', jid=0):
     for c in raw_channels:
         rmtree("./{}-{}".format(pid, c))
 
-    print('\t {}: Job {} finished after {:.4f} seconds'.format(
-        datetime.now().strftime('%H:%M:%S'), jid, time.time() - start
-    ))
-    stdout.flush()
-
-
-def error_callback(error):
-    print(error)
-
 
 if __name__ == '__main__':
 
@@ -140,23 +151,18 @@ if __name__ == '__main__':
     assay = int(argv[1])
     nproc = int(argv[2])
 
-    print("There are {} cpus on this node.".format(os.cpu_count()))
-    print("Using {} workers.".format(nproc))
-
     selected_well_dict = select_wells(assay)
     pids = selected_well_dict.keys()
-    print("Need to pull {} plates.".format(len(pids)))
 
     # Use multiprocessing to work on different plates at the same time
     # Prepare arguments for workers
-    args = []
-
-    args = [(enum[1], selected_well_dict, './output', enum[0])
-            for enum in enumerate(pids)]
+    args = [(pid, selected_well_dict, './output') for pid in pids]
 
     # Feed args to nproc workers
+    print("There are {} cpus on this node.".format(os.cpu_count()))
     pool = Pool(nproc)
     for arg in args:
-        pool.apply_async(extract_plate, arg, error_callback=error_callback)
+        sleep(1)
+        pool.apply_async(extract_plate, arg)
     pool.close()
     pool.join()
