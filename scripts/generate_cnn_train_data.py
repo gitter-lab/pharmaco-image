@@ -3,12 +3,13 @@ import re
 import cv2
 import os
 import zipfile
-from time import sleep
+import time
 from sys import argv
 from glob import glob
-from os.path import join, basename
-from shutil import copyfile, rmtree
-from multiprocessing import Pool
+from os.path import join, basename, exists
+from os import mkdir
+from shutil import rmtree
+from json import load
 
 # Global variables
 raw_channels = ['ERSyto', 'ERSytoBleed', 'Hoechst', 'Mito', 'Ph_golgi']
@@ -112,25 +113,26 @@ def extract_instance(pid, wid, label, output_dir='./output'):
         )), img=image_instance, )
 
 
-def extract_plate(pid, selected_well_dict, output_dir='./output'):
+def extract_plate(assay, pid, selected_well_dict):
     """
-    Wrapper of `extract_instance()`. Copy zip files from gluster before
+    Wrapper of `extract_instance()`. Uncompress zip files before
     extracting instances from one plate.
 
     Args:
+        assay(int): assay index
         pid(int): plate id
         selected_well_dict(dict): {pid: [(wid, label), (wid, label)...]}
-        output_dir(str): directory to store extracted tensors
     """
 
-    print('Working on plate {} on process {}'.format(pid, os.getpid()))
+    # output_dir should be unique for each pid, so they can be transferred
+    # back from the cluster
+    output_dir = './assay_{}_output_pid_{}'.format(assay, pid)
 
-    # Copy 5 zip files from gluster to the current directory
+    if not exists(output_dir):
+        mkdir(output_dir)
+
     for c in raw_channels:
-        copyfile("/mnt/gluster/zwang688/{}-{}.zip".format(pid, c),
-                 "./{}-{}.zip".format(pid, c))
-
-        # Extract the zip file and remove it
+        # Unzip the zip file and then remove it
         with zipfile.ZipFile("./{}-{}.zip".format(pid, c), 'r') as fp:
             fp.extractall('./')
 
@@ -147,22 +149,18 @@ def extract_plate(pid, selected_well_dict, output_dir='./output'):
 
 if __name__ == '__main__':
 
-    # Create the well dictionary using the command line argument
+    # Load meta data
     assay = int(argv[1])
-    nproc = int(argv[2])
+    pid = int(argv[2])
+    selected_well_dict = load(open('./selected_well_dict.json', 'r'))
 
-    selected_well_dict = select_wells(assay)
-    pids = selected_well_dict.keys()
+    # Extract images from plates
+    print("Starting to extract images from {} wells in plate {}".format(
+        len(selected_well_dict[pid]),
+        pid
+    ))
+    start_time = time.time()
 
-    # Use multiprocessing to work on different plates at the same time
-    # Prepare arguments for workers
-    args = [(pid, selected_well_dict, './output') for pid in pids]
+    extract_plate(assay, pid, selected_well_dict)
 
-    # Feed args to nproc workers
-    print("There are {} cpus on this node.".format(os.cpu_count()))
-    pool = Pool(nproc)
-    for arg in args:
-        sleep(1)
-        pool.apply_async(extract_plate, arg)
-    pool.close()
-    pool.join()
+    print("Finished extraction: {} seconds".format(time.time() - start_time))
