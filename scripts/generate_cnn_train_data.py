@@ -16,53 +16,7 @@ raw_channels = ['ERSyto', 'ERSytoBleed', 'Hoechst', 'Mito', 'Ph_golgi']
 raw_paths = ['./{}-{}/*.tif'.format('{}', c) for c in raw_channels]
 
 
-def select_wells(assay):
-    """
-    Given an assay id, select pid and wid to extract images from.
-
-    Args:
-        assay(int): assay index (column of the output matrix)
-
-    Return:
-        a dictionary: {pid: [(wid, label), (wid, label)...]}
-    """
-
-    # Load the output matrix and each row's corresponding pid, wid
-    output_data = np.load('./output_matrix_convert_collision.npz',
-                          allow_pickle=True)
-    output_matrix = output_data['output_matrix']
-    pid_wids = output_data['pid_wids']
-
-    # Find selected compounds in this assay
-    selected_index = output_matrix[:, assay] != -1
-    selected_labels = output_matrix[:, assay][selected_index]
-    selected_pid_wids = np.array(pid_wids)[selected_index]
-
-    # Flatten the selected pid_wids and group them by pid
-    # selected_wells has structure [(wid, pid, label)]
-    selected_wells = []
-
-    for i in range(len(selected_pid_wids)):
-        cur_pid_wids = selected_pid_wids[i]
-        cur_label = selected_labels[i]
-
-        for pid_wid in cur_pid_wids:
-            selected_wells.append((pid_wid[0], pid_wid[1], int(cur_label)))
-
-    # Group these wells by their pids
-    selected_well_dict = {}
-    for well in selected_wells:
-        cur_pid, cur_wid, cur_label = well[0], well[1], well[2]
-
-        if cur_pid in selected_well_dict:
-            selected_well_dict[cur_pid].append((cur_wid, cur_label))
-        else:
-            selected_well_dict[cur_pid] = [(cur_wid, cur_label)]
-
-    return selected_well_dict
-
-
-def extract_instance(pid, wid, label, output_dir='./output'):
+def extract_instance(pid, wid, label, cmpd_index, output_dir='./output'):
     """
     Extract all images in the given pid and wid pair (many fields of view).
     Then, it saves the extracted 5-channel images as a tensor in `output_dir`.
@@ -70,6 +24,8 @@ def extract_instance(pid, wid, label, output_dir='./output'):
     Args:
         pid(int): plate id
         wid(int): well id
+        cpmd_index(int): the compound index of this instance in the output
+            matrix
         label(int): 1 -> activated, 0 -> not activated
         output_dir(str): directory to store image tensors.
     """
@@ -108,8 +64,8 @@ def extract_instance(pid, wid, label, output_dir='./output'):
         image_instance = np.array(images)
 
         # Save the instance with its label
-        np.savez_compressed(join(output_dir, 'img_{}_{}_{}_{}.npz'.format(
-            pid, wid, sid, label
+        np.savez_compressed(join(output_dir, 'img_{}_{}_{}_{}_{}.npz'.format(
+            pid, wid, sid, label, cmpd_index
         )), img=image_instance, )
 
 
@@ -140,7 +96,8 @@ def extract_plate(assay, pid, selected_well_dict):
 
     # Extract all instances from all selected wells in this plate
     for wid_tuple in selected_well_dict[pid]:
-        extract_instance(pid, wid_tuple[0], wid_tuple[1], output_dir)
+        extract_instance(pid, wid_tuple[0], wid_tuple[1], wid_tuple[2],
+                         output_dir)
 
     # Clean up directories
     for c in raw_channels:
@@ -151,7 +108,8 @@ if __name__ == '__main__':
 
     # Load meta data
     assay = int(argv[1])
-    pid = int(argv[2])
+    # JSON key must be strings
+    pid = argv[2]
     selected_well_dict = load(open('./selected_well_dict.json', 'r'))
 
     # Extract images from plates

@@ -7,7 +7,7 @@ import torch.optim as optim
 from torch.utils import data
 from glob import glob
 from os.path import join, basename
-from json import dump
+from json import dump, load
 from sklearn.utils import shuffle
 from sklearn import metrics
 from sys import argv
@@ -106,6 +106,26 @@ class LeNet(nn.Module):
 
 def train_one_epoch(model, device, training_generator, vali_generator,
                     optimizer, criterion, epoch, early_stopping=None):
+    """
+    Function to train the CNN for one epoch.
+
+    Args:
+        model(torch model): CNN model
+        device(torch device): cpu or gpu
+        training_generator(torch data generator): training set data generator
+        vali_generator(torch data generator): vali set data generator
+        optimizer(torch optimizer): optimizer
+        criterion(torch criterion): loss function
+        epoch(int): epoch index
+        early_stopping(dict): early stopping dictionary to track best loss
+            value on the validation set and how many epochs since last
+            improvement
+
+    Returns:
+        train_loss: loss value on the training set
+        train_acc: accuracy on the training set
+        vali_loss: loss value on the validation set
+    """
 
     # Set lenet to training mode
     model.train()
@@ -174,6 +194,21 @@ def train_one_epoch(model, device, training_generator, vali_generator,
 
 
 def test(model, device, criterion, test_generator):
+    """
+    Evaluate the model on test dataset.
+
+    Args:
+        model(torch model): trained model
+        device(torch device): cpu/gpu
+        criterion(torch criterion): loss function
+        test_generator(torch datagenerator): test dataset generator
+
+    Returns:
+        test_loss: loss on the test set
+        test_acc: accuracy on the test set
+        y_predict_prob: predicted positive score
+        y_true: true label
+    """
 
     # Set model to evaluation mode
     model.eval()
@@ -213,21 +248,46 @@ def test(model, device, criterion, test_generator):
     return test_loss, test_acc, y_predict_prob, y_true
 
 
-def generate_data(bs, nproc, img_dir='./images'):
+def generate_data(bs, nproc, img_dir='./images', split_json=None):
+    """
+    Create generators for train, vali, and test dataset. If `split_json`
+    is given, it will use the pre-defined dataset split rules. Otherwise, it
+    uses a random 6:2:2 split.
+
+    Args:
+        bs(int): batch size
+        nproc(int): how many subprocesses to use for data loading
+        img_dir(str): directory containing all image tensors. This is not used
+            if `cv_split_json` is given.
+        split_json(str): filename of the json file where each image tensor is
+            grouped under either train, vali, or test set.
+
+    Returns:
+        Three data generators corresponding to train, vali, and test dataset.
+    """
+
     params = {
         'batch_size': bs,
         'shuffle': True,
         'num_workers': nproc
     }
 
-    img_names = glob(join(img_dir, '*.npz'))
-
     # Randomly split img_names into three sets by 6:2:2
-    img_names = shuffle(img_names)
-    quintile_len = len(img_names) // 5
-    vali_names = img_names[: quintile_len]
-    test_names = img_names[quintile_len: quintile_len * 2]
-    train_names = img_names[quintile_len * 2:]
+    if not split_json:
+        img_names = glob(join(img_dir, '*.npz'))
+
+        img_names = shuffle(img_names)
+        quintile_len = len(img_names) // 5
+        vali_names = img_names[: quintile_len]
+        test_names = img_names[quintile_len: quintile_len * 2]
+        train_names = img_names[quintile_len * 2:]
+
+    # Use pre-defined train, vali, and test dataset
+    else:
+        split_dict = load(open(split_json, 'r'))
+        train_names = split_dict['train_names']
+        vali_names = split_dict['vali_names']
+        test_names = split_dict['test_names']
 
     print(("There are {} training samples, {} validation samples, " +
            "and {} test samples.").format(
@@ -247,6 +307,19 @@ def generate_data(bs, nproc, img_dir='./images'):
 
 
 def train_main(assay, lr, bs, nproc, patience, epoch, img_dir='./images'):
+    """
+    Main function to train a LeNet CNN on these image tensors. This function
+    generates a json file encoding all training information and test results.
+
+    Args:
+        assay(int): assay index
+        lr(float): learning rate
+        bs(int): batch size
+        nproc(int): nubmer of workers
+        patience(int): early stopping patience
+        epoch(int): max epoch
+        img_dir(str): directory containing all the image tensors
+    """
 
     # Generate three datasets
     training_generator, vali_generator, test_generator = generate_data(

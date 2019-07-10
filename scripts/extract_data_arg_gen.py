@@ -22,29 +22,34 @@ def select_wells(assay):
 
     # Find selected compounds in this assay
     selected_index = output_matrix[:, assay] != -1
+    selected_index = [i for i in range(len(selected_index)) if
+                      selected_index[i]]
     selected_labels = output_matrix[:, assay][selected_index]
     selected_pid_wids = np.array(pid_wids)[selected_index]
 
     # Flatten the selected pid_wids and group them by pid
-    # selected_wells has structure [(wid, pid, label)]
+    # selected_wells has structure [(wid, pid, label, cpd_index)]
     selected_wells = []
 
     for i in range(len(selected_pid_wids)):
         cur_pid_wids = selected_pid_wids[i]
         cur_label = selected_labels[i]
+        cur_index = selected_index[i]
 
         for pid_wid in cur_pid_wids:
-            selected_wells.append((pid_wid[0], pid_wid[1], int(cur_label)))
+            selected_wells.append((pid_wid[0], pid_wid[1], int(cur_label),
+                                   cur_index))
 
     # Group these wells by their pids
     selected_well_dict = {}
     for well in selected_wells:
-        cur_pid, cur_wid, cur_label = well[0], well[1], well[2]
+        cur_pid, cur_wid, cur_label, cur_index = (well[0], well[1], well[2],
+                                                  well[3])
 
         if cur_pid in selected_well_dict:
-            selected_well_dict[cur_pid].append((cur_wid, cur_label))
+            selected_well_dict[cur_pid].append((cur_wid, cur_label, cur_index))
         else:
-            selected_well_dict[cur_pid] = [(cur_wid, cur_label)]
+            selected_well_dict[cur_pid] = [(cur_wid, cur_label, cur_index)]
 
     return selected_well_dict
 
