@@ -11,6 +11,7 @@ from json import dump, load
 from sklearn.utils import shuffle
 from sklearn import metrics
 from sys import argv
+from collections import Counter
 
 
 class Dataset(data.Dataset):
@@ -53,7 +54,7 @@ class Dataset(data.Dataset):
         x = torch.from_numpy(mat)
 
         # Get the image label from its filename
-        y = int(re.sub(r'img_\d+_.+_\d_(\d)\.npz', r'\1',
+        y = int(re.sub(r'img_\d+_.+_\d_(\d)_\d+\.npz', r'\1',
                        basename(cur_img_name)))
 
         return x, y
@@ -264,6 +265,8 @@ def generate_data(bs, nproc, img_dir='./images', split_json=None):
 
     Returns:
         Three data generators corresponding to train, vali, and test dataset.
+        weights(1d tensor): class weights computed by the label count in the
+            training data.
     """
 
     params = {
@@ -293,6 +296,23 @@ def generate_data(bs, nproc, img_dir='./images', split_json=None):
            "and {} test samples.").format(
                len(train_names), len(vali_names), len(test_names)))
 
+    # Count class labels in the training set to assign class weights
+    training_labels = []
+    for n in train_names:
+        label = int(re.sub(r'img_\d+_.+_\d_(\d)_\d+\.npz', r'\1', basename(n)))
+        training_labels.append(label)
+
+    label_count = Counter(training_labels)
+    print('Training label counter: {}'.format(label_count))
+    weights = [1, 1]
+    if label_count[0] > label_count[1]:
+        weights[1] = label_count[0] / label_count[1]
+    else:
+        weights[0] = label_count[1] / label_count[0]
+
+    # Convert weights to a 1D tensor
+    weights = torch.from_numpy(np.array(weights)).float()
+
     # Create data generators
     training_dataset = Dataset(train_names)
     training_generator = data.DataLoader(training_dataset, **params)
@@ -303,7 +323,7 @@ def generate_data(bs, nproc, img_dir='./images', split_json=None):
     test_dataset = Dataset(test_names)
     test_generator = data.DataLoader(test_dataset, **params)
 
-    return training_generator, vali_generator, test_generator
+    return training_generator, vali_generator, test_generator, weights
 
 
 def train_main(assay, lr, bs, nproc, patience, epoch, img_dir='./images'):
@@ -322,9 +342,9 @@ def train_main(assay, lr, bs, nproc, patience, epoch, img_dir='./images'):
     """
 
     # Generate three datasets
-    training_generator, vali_generator, test_generator = generate_data(
-        bs, nproc, img_dir=img_dir
-    )
+    (training_generator, vali_generator, test_generator,
+     weights) = generate_data(bs, nproc, img_dir=img_dir,
+                              split_json='scaffold_split.json')
 
     # Run on GPU if available
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -332,9 +352,11 @@ def train_main(assay, lr, bs, nproc, patience, epoch, img_dir='./images'):
 
     # Use cross-entropy as our loss funciton
     lenet = LeNet()
-    lenet.to(device)
+    lenet = lenet.to(device)
 
-    criterion = nn.CrossEntropyLoss(reduction='mean')
+    # Need to transfer weight tensor to CPU
+    weights = weights.to(device)
+    criterion = nn.CrossEntropyLoss(weight=weights, reduction='mean')
     optimizer = optim.Adam(lenet.parameters(), lr=0.001)
 
     # Init early stopping config
@@ -366,6 +388,9 @@ def train_main(assay, lr, bs, nproc, patience, epoch, img_dir='./images'):
 
         # Early stopping
         if early_stopping_dict['wait'] > early_stopping_dict['patience']:
+            print('Early stop: best vali loss = {}, waited {} epochs.'.format(
+                early_stopping_dict['best_loss'],
+                early_stopping_dict['wait']))
             break
 
     # After training, evaluate trained model on the test set
@@ -399,7 +424,7 @@ if __name__ == '__main__':
                             int(argv[2]),
                             float(argv[3]),
                             int(argv[4]))
-    epoch = 2
-    patience = 20
+    epoch = 400
+    patience = 30
     img_dir = './images'
     train_main(assay, lr, bs, nproc, patience, epoch, img_dir=img_dir)

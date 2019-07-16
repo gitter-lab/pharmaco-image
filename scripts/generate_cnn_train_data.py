@@ -63,10 +63,15 @@ def extract_instance(pid, wid, label, cmpd_index, output_dir='./output'):
         # Store each image as a 5 channel 3d matrix
         image_instance = np.array(images)
 
+        # Convert the 2d image on each channel to a square image
+        assert(image_instance.shape == (5, 520, 696))
+        padding = np.zeros((5, 696, 696)).astype(image_instance.dtype)
+        padding[:, 88:608, :] = image_instance
+
         # Save the instance with its label
         np.savez_compressed(join(output_dir, 'img_{}_{}_{}_{}_{}.npz'.format(
             pid, wid, sid, label, cmpd_index
-        )), img=image_instance, )
+        )), img=padding)
 
 
 def extract_plate(assay, pid, selected_well_dict):
