@@ -134,6 +134,9 @@ def train_one_epoch(model, device, training_generator, vali_generator,
     train_losses, y_predict_prob, y_true = [], [], []
     for i, (cur_batch, cur_labels) in enumerate(training_generator):
 
+        cur_labels_array = [i.item() for i in cur_labels]
+        print(i, Counter(cur_labels_array))
+
         # Transfer tensor to GPU if available
         cur_batch, cur_labels = cur_batch.to(device), cur_labels.to(device)
 
@@ -148,9 +151,6 @@ def train_one_epoch(model, device, training_generator, vali_generator,
         train_losses.append(loss.detach().item())
         y_predict_prob.extend(output.cpu().detach().numpy())
         y_true.extend(cur_labels.cpu().numpy())
-
-        if epoch % 5 == 0:
-            print("Epoch {} - batch {}: loss = {}".format(epoch, i, loss))
 
         # Backpropogation and update weights
         loss.backward()
@@ -269,12 +269,6 @@ def generate_data(bs, nproc, img_dir='./images', split_json=None):
             training data.
     """
 
-    params = {
-        'batch_size': bs,
-        'shuffle': True,
-        'num_workers': nproc
-    }
-
     # Randomly split img_names into three sets by 6:2:2
     if not split_json:
         img_names = glob(join(img_dir, '*.npz'))
@@ -285,7 +279,7 @@ def generate_data(bs, nproc, img_dir='./images', split_json=None):
         test_names = img_names[quintile_len: quintile_len * 2]
         train_names = img_names[quintile_len * 2:]
 
-    # Use pre-defined train, vali, and test dataset
+    # Or, use pre-defined train, vali, and test dataset
     else:
         split_dict = load(open(split_json, 'r'))
         train_names = split_dict['train_names']
@@ -296,6 +290,7 @@ def generate_data(bs, nproc, img_dir='./images', split_json=None):
            "and {} test samples.").format(
                len(train_names), len(vali_names), len(test_names)))
 
+    """
     # Count class labels in the training set to assign class weights
     training_labels = []
     for n in train_names:
@@ -310,20 +305,64 @@ def generate_data(bs, nproc, img_dir='./images', split_json=None):
     else:
         weights[0] = label_count[1] / label_count[0]
 
-    # Convert weights to a 1D tensor
+    # Convert class weights to a 1D tensor
     weights = torch.from_numpy(np.array(weights)).float()
+    """
+
+    # Count sample weight in the training set so we can sample balanced data
+    # in each batch later
+    training_labels = []
+    for n in train_names:
+        label = int(re.sub(r'img_\d+_.+_\d_(\d)_\d+\.npz', r'\1', basename(n)))
+        training_labels.append(label)
+
+    label_count = Counter(training_labels)
+    label_count_array = torch.tensor([label_count[0], label_count[1]],
+                                     dtype=torch.float)
+
+    # The class weight here is the probability to sample this instance given
+    # its class. Therefore, underrepresented class should have a higher
+    # class weight (probability).
+    class_weights = 1.0 / label_count_array
+
+    # Then assign the weight to each sample
+    sample_weights = [class_weights[l].item() for l in training_labels]
+    sample_weights = torch.tensor(sample_weights, dtype=torch.float)
+
+    # Create a random sample sampler
+    sampler = torch.utils.data.WeightedRandomSampler(
+        weights=sample_weights,
+        num_samples=len(sample_weights),
+        replacement=True
+    )
+    # batch_sampler = torch.utils.data.BatchSampler(sampler, batch_size=bs,
+    #                                               drop_last=False)
+    print('Training label counter: {}'.format(label_count))
 
     # Create data generators
+    train_params = {
+        'batch_size': bs,
+        'shuffle': False,
+        'sampler': sampler,
+        'num_workers': nproc
+    }
+
+    vali_or_test_params = {
+        'batch_size': bs,
+        'shuffle': True,
+        'num_workers': nproc
+    }
+
     training_dataset = Dataset(train_names)
-    training_generator = data.DataLoader(training_dataset, **params)
+    training_generator = data.DataLoader(training_dataset, **train_params)
 
     vali_dataset = Dataset(vali_names)
-    vali_generator = data.DataLoader(vali_dataset, **params)
+    vali_generator = data.DataLoader(vali_dataset, **vali_or_test_params)
 
     test_dataset = Dataset(test_names)
-    test_generator = data.DataLoader(test_dataset, **params)
+    test_generator = data.DataLoader(test_dataset, **vali_or_test_params)
 
-    return training_generator, vali_generator, test_generator, weights
+    return training_generator, vali_generator, test_generator
 
 
 def train_main(assay, lr, bs, nproc, patience, epoch, img_dir='./images'):
@@ -342,9 +381,9 @@ def train_main(assay, lr, bs, nproc, patience, epoch, img_dir='./images'):
     """
 
     # Generate three datasets
-    (training_generator, vali_generator, test_generator,
-     weights) = generate_data(bs, nproc, img_dir=img_dir,
-                              split_json='scaffold_split.json')
+    (training_generator, vali_generator,
+     test_generator) = generate_data(bs, nproc, img_dir=img_dir,
+                                     split_json='scaffold_split.json')
 
     # Run on GPU if available
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -354,9 +393,10 @@ def train_main(assay, lr, bs, nproc, patience, epoch, img_dir='./images'):
     lenet = LeNet()
     lenet = lenet.to(device)
 
-    # Need to transfer weight tensor to CPU
-    weights = weights.to(device)
-    criterion = nn.CrossEntropyLoss(weight=weights, reduction='mean')
+    # Need to transfer weight tensor to GPU
+    # weights = weights.to(device)
+    # criterion = nn.CrossEntropyLoss(weight=weights, reduction='mean')
+    criterion = nn.CrossEntropyLoss(reduction='mean')
     optimizer = optim.Adam(lenet.parameters(), lr=0.001)
 
     # Init early stopping config
@@ -424,7 +464,7 @@ if __name__ == '__main__':
                             int(argv[2]),
                             float(argv[3]),
                             int(argv[4]))
-    epoch = 400
+    epoch = 300
     patience = 30
     img_dir = './images'
     train_main(assay, lr, bs, nproc, patience, epoch, img_dir=img_dir)
