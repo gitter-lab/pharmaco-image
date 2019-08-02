@@ -93,8 +93,10 @@ class VGG(nn.Module):
             nn.Linear(200, 200),
             nn.ReLU(True),
             nn.Dropout(),
-            nn.Linear(200, 2)
+            nn.Linear(200, 1)
         )
+
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         """
@@ -105,6 +107,7 @@ class VGG(nn.Module):
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
         x = self.classifier(x)
+        x = self.sigmoid(x)
         return x
 
 
@@ -141,13 +144,14 @@ def train_one_epoch(model, device, training_generator, vali_generator,
         print(i, Counter(cur_labels_array))
 
         # Transfer tensor to GPU if available
+        cur_labels = cur_labels.float()
         cur_batch, cur_labels = cur_batch.to(device), cur_labels.to(device)
 
         # Clean the gradient
         optimizer.zero_grad()
 
         # Run the network forward
-        output = model(cur_batch)
+        output = torch.squeeze(model(cur_batch))
 
         # Compute the loss
         loss = criterion(output, cur_labels)
@@ -161,7 +165,7 @@ def train_one_epoch(model, device, training_generator, vali_generator,
 
     # Convert tensor to numpy array so we can use sklearn's metrics
     y_predict_prob = np.stack(y_predict_prob)
-    y_predict = np.argmax(y_predict_prob, axis=1)
+    y_predict = [1 if p >= 0.5 else 0 for p in y_predict_prob]
     y_true = np.array(y_true)
 
     # Average losses over different batches. Each loss corresponds to the mean
@@ -176,8 +180,9 @@ def train_one_epoch(model, device, training_generator, vali_generator,
 
     with torch.no_grad():
         for cur_batch, cur_labels in vali_generator:
+            cur_labels = cur_labels.float()
             cur_batch, cur_labels = cur_batch.to(device), cur_labels.to(device)
-            output = model(cur_batch)
+            output = torch.squeeze(model(cur_batch))
 
             loss = criterion(output, cur_labels)
             vali_losses.append(loss.detach().item())
@@ -223,9 +228,10 @@ def test(model, device, criterion, test_generator):
         for cur_batch, cur_labels in test_generator:
             # Even there is only forward() in testing phase, it is still faster
             # to do it on GPU
+            cur_labels = cur_labels.float()
             cur_batch, cur_labels = cur_batch.to(device), cur_labels.to(device)
 
-            output = model(cur_batch)
+            output = torch.squeeze(model(cur_batch))
             loss = criterion(output, cur_labels)
 
             # Track the loss and prediction for each batch
@@ -234,8 +240,7 @@ def test(model, device, criterion, test_generator):
             y_true.extend(cur_labels.cpu().numpy())
 
     # Convert tensor to numpy array so we can use sklearn's metrics
-    # sklearn loves 1d proba array of the activated class
-    y_predict_prob = np.stack(y_predict_prob)[:, 1]
+    y_predict_prob = np.stack(y_predict_prob)
     y_predict = [1 if i >= 0.5 else 0 for i in y_predict_prob]
 
     # Need to cast np.int64 to int for json dump
@@ -399,7 +404,9 @@ def train_main(assay, lr, bs, nproc, patience, epoch, img_dir='./images'):
     # Need to transfer weight tensor to GPU
     # weights = weights.to(device)
     # criterion = nn.CrossEntropyLoss(weight=weights, reduction='mean')
-    criterion = nn.CrossEntropyLoss(reduction='mean')
+    # criterion = nn.CrossEntropyLoss(reduction='mean')
+    criterion = nn.BCELoss(reduction='mean')
+
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
     # Init early stopping config
